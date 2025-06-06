@@ -33,26 +33,26 @@ static unsigned int n_buffers = 0;
 
 // --- Global variables for OpenGL ---
 static GLuint texture_id;
-static unsigned char *rgb_frame = NULL; // Buffer for the converted RGB frame
-static int fullscreen_mode = 0; // NEW: Flag for fullscreen mode
+static unsigned char *rgb_frame = NULL; 
+static int fullscreen_mode = 0; 
+static int display_test_pattern = 0; 
+static float g_plane_orbit_distance = 1.0f; 
 
 // --- Helper Functions ---
 
-// --- NEW: Global variables for Viture Integration ---
 static bool use_viture_imu = false;
 // Use volatile to prevent compiler from optimizing away reads, as these are
 // updated by a different thread (the Viture callback thread).
 static volatile float viture_roll = 0.0f;
 static volatile float viture_pitch = 0.0f;
 static volatile float viture_yaw = 0.0f;
-static float initial_roll_offset = 0.0f;  // NEW: To store the initial roll offset
-static float initial_pitch_offset = 0.0f; // NEW: To store the initial pitch offset
-static float initial_yaw_offset = 0.0f;   // To store the initial yaw offset
-static bool initial_offsets_set = false;  // NEW: Flag to ensure all offsets are set only once
+static float initial_roll_offset = 0.0f;  
+static float initial_pitch_offset = 0.0f; 
+static float initial_yaw_offset = 0.0f;  
+static bool initial_offsets_set = false; 
 
 // --- Helper Functions ---
 
-// NEW: Helper function from your main.txt to parse float from byte array
 static float makeFloat(uint8_t *data) {
     float value = 0;
     uint8_t tem[4];
@@ -64,7 +64,6 @@ static float makeFloat(uint8_t *data) {
     return value;
 }
 
-// NEW: Callback function for the Viture IMU data
 static void viture_imu_callback(uint8_t *data, uint16_t len, uint32_t ts) {
     // We only need the first 12 bytes for Euler angles
     if (len < 12) return;
@@ -72,8 +71,8 @@ static void viture_imu_callback(uint8_t *data, uint16_t len, uint32_t ts) {
     // NEW: Set initial offsets on first valid IMU data if using Viture
     if (use_viture_imu && !initial_offsets_set) {
         initial_roll_offset = makeFloat(data);
-        initial_pitch_offset = makeFloat(data + 4); // MODIFIED: Pitch inversion removed for offset
-        initial_yaw_offset = -makeFloat(data + 8);   // MODIFIED: Yaw inverted for offset
+        initial_pitch_offset = makeFloat(data + 4); 
+        initial_yaw_offset = -makeFloat(data + 8);
         initial_offsets_set = true;
         printf("Viture: Initial offsets captured: Roll=%f, Pitch=%f, Yaw=%f\n", initial_roll_offset, initial_pitch_offset, initial_yaw_offset);
     }
@@ -81,24 +80,13 @@ static void viture_imu_callback(uint8_t *data, uint16_t len, uint32_t ts) {
     // Adjust pitch and yaw based on feedback.
     // Roll remains as is.
     viture_roll = makeFloat(data);
-    viture_pitch = makeFloat(data + 4); // MODIFIED: Pitch inversion removed
-    viture_yaw = -makeFloat(data + 8);  // MODIFIED: Yaw inverted
-    
-    // Uncomment for debugging IMU data
-    // LOG("IMU data: Roll=%f, Pitch=%f, Yaw=%f\n", viture_roll, viture_pitch, viture_yaw);
-
-    // Since we have new rotation data, signal GLUT to redraw the scene
-    //glutPostRedisplay();
+    viture_pitch = makeFloat(data + 4);
+    viture_yaw = -makeFloat(data + 8);
 }
 
 static void viture_mcu_callback(uint16_t msgid, uint8_t *data, uint16_t len, uint32_t ts)
 {
-    // for (int i = 0; i < len; i++) {
-    //      LOG("%02x", data[i]);
-    //      if (i == len -1) {
-    //      	LOG("\n");
-    //      }
-    // }
+    // Dummy
 }
 
 static inline unsigned char clamp(int val) {
@@ -231,7 +219,6 @@ void init_v4l2() {
 
 void cleanup() {
     printf("Cleaning up...\n");
-    // NEW: De-initialize Viture SDK if it was used
     if (use_viture_imu) {
         printf("Viture: Disabling IMU and de-initializing...\n");
         set_imu(false);
@@ -256,9 +243,9 @@ void display() {
 
     glMatrixMode(GL_MODELVIEW);
     glLoadIdentity();
-    gluLookAt(0.0, 0.0, 2.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0);
+    gluLookAt(0.0, 0.0, 2.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0); // Camera looks at origin
 
-    // --- MODIFIED: Conditional rotation ---
+    // Rotations are applied first, affecting the coordinate system at the origin
     if (use_viture_imu) {
         // Apply rotation from Viture glasses IMU
         // The order of rotations (e.g., Yaw, Pitch, Roll) is important.
@@ -274,6 +261,9 @@ void display() {
         glRotatef(15.0f, 1.0f, 0.0f, 0.0f); // Static tilt
         glRotatef(angle, 0.0f, 1.0f, 0.0f); // Auto-rotate
     }
+
+    // NEW: Translate the plane along the (now rotated) Z-axis to make it orbit the origin
+    glTranslatef(0.0f, 0.0f, -g_plane_orbit_distance);
 
     glBindTexture(GL_TEXTURE_2D, texture_id);
     glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, FRAME_WIDTH, FRAME_HEIGHT, GL_RGB, GL_UNSIGNED_BYTE, rgb_frame);
@@ -312,8 +302,11 @@ void capture_and_update() {
     }
     
     // Process the new frame
-    //convert_nv24_to_rgb(buffers[buf.index].start, rgb_frame, FRAME_WIDTH, FRAME_HEIGHT);
-    fill_frame_with_pattern(rgb_frame, FRAME_WIDTH, FRAME_HEIGHT); // For testing, fill with a pattern
+    if (display_test_pattern) {
+        fill_frame_with_pattern(rgb_frame, FRAME_WIDTH, FRAME_HEIGHT);
+    } else {
+        convert_nv24_to_rgb(buffers[buf.index].start, rgb_frame, FRAME_WIDTH, FRAME_HEIGHT);
+    }
 
     // Re-queue the buffer
     if (ioctl(fd, VIDIOC_QBUF, &buf) == -1) {
@@ -357,28 +350,38 @@ void init_gl() {
 }
 
 int main(int argc, char **argv) {
-    // --- MODIFIED: Parse command-line arguments ---
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "-f") == 0 || strcmp(argv[i], "--fullscreen") == 0) {
             fullscreen_mode = 1;
-        }
-        if (strcmp(argv[i], "--viture") == 0) {
+            printf("Argument: Fullscreen mode enabled.\n");
+        } else if (strcmp(argv[i], "--viture") == 0) {
             use_viture_imu = true;
+            printf("Argument: Viture IMU enabled.\n");
+        } else if (strcmp(argv[i], "-tp") == 0 || strcmp(argv[i], "--test-pattern") == 0) {
+            display_test_pattern = 1;
+            printf("Argument: Displaying test pattern.\n");
+        } else if ((strcmp(argv[i], "-pd") == 0 || strcmp(argv[i], "--plane-distance") == 0)) {
+            if (i + 1 < argc) {
+                char *endptr;
+                float val = strtof(argv[i+1], &endptr);
+                if (endptr != argv[i+1] && *endptr == '\0') { // Check if conversion was successful
+                    g_plane_orbit_distance = val;
+                    i++; // Consume the value argument
+                    printf("Argument: Plane orbit distance set to %f.\n", g_plane_orbit_distance);
+                } else {
+                    fprintf(stderr, "Error: Invalid float value for %s: %s\n", argv[i], argv[i+1]);
+                }
+            } else {
+                fprintf(stderr, "Error: %s requires a float value.\n", argv[i]);
+            }
         }
     }
     
     printf("Starting V4L2-OpenGL real-time viewer...\n");
 
-    // --- NEW: Initialize Viture SDK if requested ---
     if (use_viture_imu) {
         printf("Viture: Initializing with IMU callback...\n");
-        // We don't need the MCU callback from your sample, so we pass NULL
-        //if(
         init(viture_imu_callback, viture_mcu_callback);
-        // != 0) {
-        //    fprintf(stderr, "FATAL: Failed to initialize Viture SDK. Is the device connected?\n");
-        //    return -1;
-        //}
         set_imu(true); // Start the IMU data stream
         printf("Viture: IMU stream enabled.\n");
     }
