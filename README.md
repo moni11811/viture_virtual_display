@@ -76,3 +76,8 @@ This command would:
 - Set the plane orbit distance to 0.8 units.
 - Scale the plane to 120% of its original size.
 - Display the test pattern.
+
+
+## TODO
+
+* Access the Viture IMU directly through hidapi to go around the limitation of Viture SDK only being available for X86
