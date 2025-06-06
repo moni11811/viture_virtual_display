@@ -10,10 +10,15 @@
 
 #include <linux/videodev2.h>
 
+#include <stdbool.h>
+
+
 // Use GL/glut.h on macOS, GL/freeglut.h on Linux
 #include <GL/freeglut.h> 
 
+#ifdef USE_VITURE
 #include "3rdparty/include/viture.h"
+#endif
 
 // --- V4L2 and Frame Configuration ---
 #define DEVICE_PATH      "/dev/video0"
@@ -275,11 +280,14 @@ void init_v4l2() {
 
 void cleanup() {
     printf("Cleaning up...\n");
+#ifdef USE_VITURE
     if (use_viture_imu) {
         printf("Viture: Disabling IMU and de-initializing...\n");
         set_imu(false);
         deinit();
     }
+#endif
+
     if (fd != -1) {
         enum v4l2_buf_type stream_type = V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE; // MODIFIED for MPLANE
         ioctl(fd, VIDIOC_STREAMOFF, &stream_type);
@@ -424,7 +432,7 @@ void capture_and_update() {
     }
 
     // Tell GLUT to redraw the window // OLD: Removed as per request
-    // glutPostRedisplay(); 
+    glutPostRedisplay(); 
 }
 
 void idle() {
@@ -518,12 +526,14 @@ int main(int argc, char **argv) {
     
     printf("Starting V4L2-OpenGL real-time viewer...\n");
 
+#ifdef USE_VITURE
     if (use_viture_imu) {
         printf("Viture: Initializing with IMU callback...\n");
         init(viture_imu_callback, viture_mcu_callback);
         set_imu(true); // Start the IMU data stream
         printf("Viture: IMU stream enabled.\n");
     }
+#endif
 
     glutInit(&argc, argv);
     glutInitDisplayMode(GLUT_DOUBLE | GLUT_RGB | GLUT_DEPTH);
