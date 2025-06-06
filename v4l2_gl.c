@@ -23,14 +23,23 @@
 #define BUFFER_COUNT     4
 
 // --- Global variables for V4L2 ---
-struct buffer {
+// NEW: Structures for multi-planar buffer handling
+struct plane_info {
     void   *start;
     size_t length;
 };
 
+struct mplane_buffer {
+    struct plane_info planes[VIDEO_MAX_PLANES];
+    unsigned int num_planes_in_buffer; // Actual number of planes for this buffer type
+};
+
 static int fd = -1;
-static struct buffer *buffers = NULL;
+// static struct buffer *buffers = NULL; // OLD
+static struct mplane_buffer *buffers_mp = NULL; // NEW for MPLANE
 static unsigned int n_buffers = 0;
+static unsigned int num_planes_per_buffer = 0; // Expected number of planes (e.g., 2 for NV24)
+
 
 // --- Global variables for OpenGL ---
 static GLuint texture_id;
@@ -45,7 +54,7 @@ static bool glut_initialized = false;
 
 static int fullscreen_mode = 0; 
 static int display_test_pattern = 0;                // For -tp flag (ensure it's here)
-static float g_plane_orbit_distance = 1.0f;         // For -pd flag, default to 1.0 (Note: user might want this to be 0.0f by default from previous discussions)
+static float g_plane_orbit_distance = 1.0f;         // For -pd flag, default to 1.0
 static float g_plane_scale = 1.0f;                  // NEW: For scaling the plane
 
 // --- Helper Functions ---
@@ -111,9 +120,10 @@ static inline unsigned char clamp(int val) {
 // Convert a single NV24 frame to RGB24
 // This is a performance-critical function. For higher performance,
 // consider using SIMD instructions or a GPU shader (GLSL) for conversion.
-void convert_nv24_to_rgb(const unsigned char *nv24, unsigned char *rgb, int width, int height) {
-    const unsigned char *y_plane = nv24;
-    const unsigned char *uv_plane = nv24 + (width * height);
+// MODIFIED: Signature for separate Y and UV planes
+void convert_nv24_to_rgb(const unsigned char *y_plane_data, const unsigned char *uv_plane_data, unsigned char *rgb, int width, int height) {
+    const unsigned char *y_plane = y_plane_data;
+    const unsigned char *uv_plane = uv_plane_data;
 
     for (int y = 0; y < height; y++) {
         for (int x = 0; x < width; x++) {
@@ -176,55 +186,88 @@ void init_v4l2() {
 
     // 3. Set format
     memset(&fmt, 0, sizeof(fmt));
-    fmt.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
-    fmt.fmt.pix.width       = FRAME_WIDTH;
-    fmt.fmt.pix.height      = FRAME_HEIGHT;
-    fmt.fmt.pix.pixelformat = PIXEL_FORMAT;
-    fmt.fmt.pix.field       = V4L2_FIELD_NONE;
+    fmt.type = V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE; // MODIFIED for MPLANE
+    fmt.fmt.pix_mp.width       = FRAME_WIDTH;
+    fmt.fmt.pix_mp.height      = FRAME_HEIGHT;
+    fmt.fmt.pix_mp.pixelformat = PIXEL_FORMAT; // e.g., V4L2_PIX_FMT_NV24
+    fmt.fmt.pix_mp.field       = V4L2_FIELD_NONE;
+    // num_planes is often set by the driver, or we can specify if known (e.g., 2 for NV24)
+    // For NV24, plane 0 is Y, plane 1 is UV.
+    fmt.fmt.pix_mp.num_planes = 2; // Explicitly for NV24
+
     if (ioctl(fd, VIDIOC_S_FMT, &fmt) < 0) {
-        perror("VIDIOC_S_FMT failed. Device may not support 1920x1080 NV24");
+        perror("VIDIOC_S_FMT failed. Device may not support 1920x1080 NV24 MPLANE");
         exit(EXIT_FAILURE);
     }
-    printf("V4L2: Format set to %dx%d NV24\n", FRAME_WIDTH, FRAME_HEIGHT);
+    // Store the actual number of planes confirmed by the driver
+    num_planes_per_buffer = fmt.fmt.pix_mp.num_planes;
+    if (num_planes_per_buffer == 0 || num_planes_per_buffer > VIDEO_MAX_PLANES) {
+        fprintf(stderr, "V4L2: Invalid number of planes: %u\n", num_planes_per_buffer);
+        exit(EXIT_FAILURE);
+    }
+    printf("V4L2: Format set to %dx%d, pixelformat %c%c%c%c, %u planes (MPLANE)\n",
+           fmt.fmt.pix_mp.width, fmt.fmt.pix_mp.height,
+           (fmt.fmt.pix_mp.pixelformat)&0xFF, (fmt.fmt.pix_mp.pixelformat>>8)&0xFF,
+           (fmt.fmt.pix_mp.pixelformat>>16)&0xFF, (fmt.fmt.pix_mp.pixelformat>>24)&0xFF,
+           num_planes_per_buffer);
+
 
     // 4. Request buffers
     memset(&req, 0, sizeof(req));
     req.count = BUFFER_COUNT;
-    req.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
+    req.type = V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE; // MODIFIED for MPLANE
     req.memory = V4L2_MEMORY_MMAP;
     if (ioctl(fd, VIDIOC_REQBUFS, &req) < 0) { perror("VIDIOC_REQBUFS"); exit(EXIT_FAILURE); }
     n_buffers = req.count;
     printf("V4L2: %d buffers requested.\n", n_buffers);
 
     // 5. Map buffers
-    buffers = calloc(n_buffers, sizeof(*buffers));
+    buffers_mp = calloc(n_buffers, sizeof(*buffers_mp)); // MODIFIED for MPLANE
     for (unsigned int i = 0; i < n_buffers; ++i) {
         struct v4l2_buffer buf;
+        struct v4l2_plane planes_query[VIDEO_MAX_PLANES]; // Array for plane info
         memset(&buf, 0, sizeof(buf));
-        buf.type   = V4L2_BUF_TYPE_VIDEO_CAPTURE;
+        memset(planes_query, 0, sizeof(planes_query)); // Clear plane structures
+
+        buf.type   = V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE; // MODIFIED for MPLANE
         buf.memory = V4L2_MEMORY_MMAP;
         buf.index  = i;
+        buf.m.planes = planes_query; // Point to our plane array
+        buf.length = num_planes_per_buffer; // Number of planes to query
+
         if (ioctl(fd, VIDIOC_QUERYBUF, &buf) < 0) { perror("VIDIOC_QUERYBUF"); exit(EXIT_FAILURE); }
-        buffers[i].length = buf.length;
-        buffers[i].start = mmap(NULL, buf.length, PROT_READ | PROT_WRITE, MAP_SHARED, fd, buf.m.offset);
-        if (buffers[i].start == MAP_FAILED) { perror("mmap"); exit(EXIT_FAILURE); }
+
+        buffers_mp[i].num_planes_in_buffer = num_planes_per_buffer; // Store how many planes this buffer uses
+        for (unsigned int p = 0; p < num_planes_per_buffer; ++p) {
+            buffers_mp[i].planes[p].length = buf.m.planes[p].length;
+            buffers_mp[i].planes[p].start = mmap(NULL, buf.m.planes[p].length,
+                                                 PROT_READ | PROT_WRITE, MAP_SHARED,
+                                                 fd, buf.m.planes[p].m.mem_offset);
+            if (buffers_mp[i].planes[p].start == MAP_FAILED) { perror("mmap plane"); exit(EXIT_FAILURE); }
+        }
     }
-    printf("V4L2: Buffers mapped.\n");
+    printf("V4L2: Buffers and planes mapped.\n");
 
     // 6. Queue buffers
     for (unsigned int i = 0; i < n_buffers; ++i) {
         struct v4l2_buffer buf;
+        struct v4l2_plane planes_q[VIDEO_MAX_PLANES];
         memset(&buf, 0, sizeof(buf));
-        buf.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
+        memset(planes_q, 0, sizeof(planes_q));
+
+        buf.type = V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE; // MODIFIED for MPLANE
         buf.memory = V4L2_MEMORY_MMAP;
         buf.index = i;
+        buf.m.planes = planes_q;
+        buf.length = num_planes_per_buffer; // Number of planes
+
         if (ioctl(fd, VIDIOC_QBUF, &buf) < 0) { perror("VIDIOC_QBUF"); exit(EXIT_FAILURE); }
     }
     printf("V4L2: Buffers queued.\n");
 
     // 7. Start streaming
-    enum v4l2_buf_type type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
-    if (ioctl(fd, VIDIOC_STREAMON, &type) < 0) { perror("VIDIOC_STREAMON"); exit(EXIT_FAILURE); }
+    enum v4l2_buf_type stream_type = V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE; // MODIFIED for MPLANE
+    if (ioctl(fd, VIDIOC_STREAMON, &stream_type) < 0) { perror("VIDIOC_STREAMON"); exit(EXIT_FAILURE); }
     printf("V4L2: Streaming started.\n");
 }
 
@@ -238,14 +281,20 @@ void cleanup() {
         deinit();
     }
     if (fd != -1) {
-        enum v4l2_buf_type type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
-        ioctl(fd, VIDIOC_STREAMOFF, &type);
-        for (unsigned int i = 0; i < n_buffers; ++i) {
-            munmap(buffers[i].start, buffers[i].length);
+        enum v4l2_buf_type stream_type = V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE; // MODIFIED for MPLANE
+        ioctl(fd, VIDIOC_STREAMOFF, &stream_type);
+        if (buffers_mp) { // MODIFIED for MPLANE
+            for (unsigned int i = 0; i < n_buffers; ++i) {
+                for (unsigned int p = 0; p < buffers_mp[i].num_planes_in_buffer; ++p) {
+                     if (buffers_mp[i].planes[p].start) {
+                        munmap(buffers_mp[i].planes[p].start, buffers_mp[i].planes[p].length);
+                     }
+                }
+            }
         }
         close(fd);
     }
-    if (buffers) free(buffers);
+    if (buffers_mp) free(buffers_mp); // MODIFIED for MPLANE
     // if (rgb_frame) free(rgb_frame); // OLD
     if (rgb_frames[0]) free(rgb_frames[0]); // NEW
     if (rgb_frames[1]) free(rgb_frames[1]); // NEW
@@ -322,9 +371,14 @@ void reshape(int w, int h) {
 
 void capture_and_update() {
     struct v4l2_buffer buf;
+    struct v4l2_plane planes_dq[VIDEO_MAX_PLANES]; // Array for plane info
     memset(&buf, 0, sizeof(buf));
-    buf.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
+    memset(planes_dq, 0, sizeof(planes_dq));
+
+    buf.type = V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE; // MODIFIED for MPLANE
     buf.memory = V4L2_MEMORY_MMAP;
+    buf.m.planes = planes_dq;
+    buf.length = num_planes_per_buffer; // Number of planes
 
     // Dequeue a buffer (non-blocking)
     if (ioctl(fd, VIDIOC_DQBUF, &buf) == -1) {
@@ -338,10 +392,21 @@ void capture_and_update() {
     
     // Process the new frame
     // MODIFIED: Write to the back buffer
+    // Access Y plane from planes[0].start and UV plane from planes[1].start for NV24
+    // Ensure num_planes_per_buffer is at least 2 for NV24.
     if (display_test_pattern) {
         fill_frame_with_pattern(rgb_frames[back_buffer_idx], FRAME_WIDTH, FRAME_HEIGHT);
     } else {
-        convert_nv24_to_rgb(buffers[buf.index].start, rgb_frames[back_buffer_idx], FRAME_WIDTH, FRAME_HEIGHT);
+        if (num_planes_per_buffer >= 2) { // Check for NV24 structure
+            convert_nv24_to_rgb(
+                (const unsigned char *)buffers_mp[buf.index].planes[0].start,
+                (const unsigned char *)buffers_mp[buf.index].planes[1].start,
+                rgb_frames[back_buffer_idx], FRAME_WIDTH, FRAME_HEIGHT);
+        } else {
+            fprintf(stderr, "Error: Expected 2 planes for NV24, got %u\n", num_planes_per_buffer);
+            // Optionally fill with a default color or pattern to indicate error
+            fill_frame_with_pattern(rgb_frames[back_buffer_idx], FRAME_WIDTH, FRAME_HEIGHT);
+        }
     }
 
     // NEW: Signal that a new frame is ready in the back buffer
@@ -350,6 +415,9 @@ void capture_and_update() {
     pthread_mutex_unlock(&frame_mutex);
 
     // Re-queue the buffer
+    // buf.type, buf.memory, buf.index, buf.m.planes, buf.length are already set from DQBUF
+    // The driver might update bytesused in buf.m.planes[p] upon DQBUF.
+    // For QBUF, these usually don't need to be reset unless changing buffer contents outside V4L2.
     if (ioctl(fd, VIDIOC_QBUF, &buf) == -1) {
         perror("VIDIOC_QBUF");
         exit(EXIT_FAILURE);
