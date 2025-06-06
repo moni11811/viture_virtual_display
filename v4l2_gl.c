@@ -410,6 +410,12 @@ void capture_and_update() {
                 (const unsigned char *)buffers_mp[buf.index].planes[0].start,
                 (const unsigned char *)buffers_mp[buf.index].planes[1].start,
                 rgb_frames[back_buffer_idx], FRAME_WIDTH, FRAME_HEIGHT);
+        } else if (num_planes_per_buffer == 1) {
+            //If it's a single plane the Cr and Cb are after the Y plane
+            convert_nv24_to_rgb(
+                (const unsigned char *)buffers_mp[buf.index].planes[0].start,
+                (const unsigned char *)buffers_mp[buf.index].planes[0].start + FRAME_WIDTH * FRAME_HEIGHT,
+                rgb_frames[back_buffer_idx], FRAME_WIDTH, FRAME_HEIGHT);
         } else {
             fprintf(stderr, "Error: Expected 2 planes for NV24, got %u\n", num_planes_per_buffer);
             // Optionally fill with a default color or pattern to indicate error
