@@ -6,6 +6,7 @@
 #include <errno.h>
 #include <sys/ioctl.h>
 #include <sys/mman.h>
+#include <pthread.h> // NEW: For mutex
 
 #include <linux/videodev2.h>
 
@@ -33,10 +34,19 @@ static unsigned int n_buffers = 0;
 
 // --- Global variables for OpenGL ---
 static GLuint texture_id;
-static unsigned char *rgb_frame = NULL; 
+// static unsigned char *rgb_frame = NULL; // OLD single buffer
+static unsigned char *rgb_frames[2] = {NULL, NULL}; // NEW: Double buffers for RGB frame
+static int front_buffer_idx = 0;                   // NEW: Index of the buffer currently displayed
+static int back_buffer_idx = 1;                    // NEW: Index of the buffer being written to
+static volatile bool new_frame_captured = false;   // NEW: Flag to indicate a new frame is in back buffer
+static pthread_mutex_t frame_mutex;                // NEW: Mutex for synchronizing buffer access
+
+static bool glut_initialized = false;
+
 static int fullscreen_mode = 0; 
-static int display_test_pattern = 0; 
-static float g_plane_orbit_distance = 1.0f; 
+static int display_test_pattern = 0;                // For -tp flag (ensure it's here)
+static float g_plane_orbit_distance = 1.0f;         // For -pd flag, default to 1.0 (Note: user might want this to be 0.0f by default from previous discussions)
+static float g_plane_scale = 1.0f;                  // NEW: For scaling the plane
 
 // --- Helper Functions ---
 
@@ -82,6 +92,9 @@ static void viture_imu_callback(uint8_t *data, uint16_t len, uint32_t ts) {
     viture_roll = makeFloat(data);
     viture_pitch = makeFloat(data + 4);
     viture_yaw = -makeFloat(data + 8);
+
+    // NEW: Signal GLUT to redraw the scene after IMU update
+    if ( glut_initialized ) glutPostRedisplay();
 }
 
 static void viture_mcu_callback(uint16_t msgid, uint8_t *data, uint16_t len, uint32_t ts)
@@ -233,7 +246,10 @@ void cleanup() {
         close(fd);
     }
     if (buffers) free(buffers);
-    if (rgb_frame) free(rgb_frame);
+    // if (rgb_frame) free(rgb_frame); // OLD
+    if (rgb_frames[0]) free(rgb_frames[0]); // NEW
+    if (rgb_frames[1]) free(rgb_frames[1]); // NEW
+    pthread_mutex_destroy(&frame_mutex); // NEW
     glDeleteTextures(1, &texture_id);
     printf("Cleanup complete.\n");
 }
@@ -265,8 +281,27 @@ void display() {
     // NEW: Translate the plane along the (now rotated) Z-axis to make it orbit the origin
     glTranslatef(0.0f, 0.0f, -g_plane_orbit_distance);
 
+    // NEW: Apply scaling to the plane
+    glScalef(g_plane_scale, g_plane_scale, 1.0f);
+
+    bool generate_texture = false;
+    pthread_mutex_lock(&frame_mutex);
+    if (new_frame_captured) {
+        // Swap buffers
+        int temp = front_buffer_idx;
+        front_buffer_idx = back_buffer_idx;
+        back_buffer_idx = temp;
+        new_frame_captured = false;
+        generate_texture = true; 
+    }
+    pthread_mutex_unlock(&frame_mutex);
+
+
     glBindTexture(GL_TEXTURE_2D, texture_id);
-    glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, FRAME_WIDTH, FRAME_HEIGHT, GL_RGB, GL_UNSIGNED_BYTE, rgb_frame);
+    // MODIFIED: Use the front buffer for display
+
+    // NEW: Double buffering logic
+    if ( generate_texture ) glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, FRAME_WIDTH, FRAME_HEIGHT, GL_RGB, GL_UNSIGNED_BYTE, rgb_frames[front_buffer_idx]);
 
     float aspect_ratio = (float)FRAME_WIDTH / (float)FRAME_HEIGHT;
     glBegin(GL_QUADS);
@@ -302,11 +337,17 @@ void capture_and_update() {
     }
     
     // Process the new frame
+    // MODIFIED: Write to the back buffer
     if (display_test_pattern) {
-        fill_frame_with_pattern(rgb_frame, FRAME_WIDTH, FRAME_HEIGHT);
+        fill_frame_with_pattern(rgb_frames[back_buffer_idx], FRAME_WIDTH, FRAME_HEIGHT);
     } else {
-        convert_nv24_to_rgb(buffers[buf.index].start, rgb_frame, FRAME_WIDTH, FRAME_HEIGHT);
+        convert_nv24_to_rgb(buffers[buf.index].start, rgb_frames[back_buffer_idx], FRAME_WIDTH, FRAME_HEIGHT);
     }
+
+    // NEW: Signal that a new frame is ready in the back buffer
+    pthread_mutex_lock(&frame_mutex);
+    new_frame_captured = true;
+    pthread_mutex_unlock(&frame_mutex);
 
     // Re-queue the buffer
     if (ioctl(fd, VIDIOC_QBUF, &buf) == -1) {
@@ -314,8 +355,8 @@ void capture_and_update() {
         exit(EXIT_FAILURE);
     }
 
-    // Tell GLUT to redraw the window
-    glutPostRedisplay();
+    // Tell GLUT to redraw the window // OLD: Removed as per request
+    // glutPostRedisplay(); 
 }
 
 void idle() {
@@ -323,13 +364,23 @@ void idle() {
 }
 
 void init_gl() {
-    rgb_frame = malloc(FRAME_WIDTH * FRAME_HEIGHT * 3); // 3 bytes for R, G, B
-    if (!rgb_frame) {
-        fprintf(stderr, "Failed to allocate memory for RGB frame\n");
+    // NEW: Initialize mutex
+    if (pthread_mutex_init(&frame_mutex, NULL) != 0) {
+        perror("Mutex init failed");
+        exit(EXIT_FAILURE);
+    }
+
+    // NEW: Allocate double buffers
+    rgb_frames[0] = malloc(FRAME_WIDTH * FRAME_HEIGHT * 3);
+    rgb_frames[1] = malloc(FRAME_WIDTH * FRAME_HEIGHT * 3);
+
+    if (!rgb_frames[0] || !rgb_frames[1]) {
+        fprintf(stderr, "Failed to allocate memory for RGB frames\n");
         exit(EXIT_FAILURE);
     }
     // Initialize with a black screen
-    memset(rgb_frame, 0, FRAME_WIDTH * FRAME_HEIGHT * 3);
+    memset(rgb_frames[0], 0, FRAME_WIDTH * FRAME_HEIGHT * 3);
+    memset(rgb_frames[1], 0, FRAME_WIDTH * FRAME_HEIGHT * 3);
 
     glEnable(GL_DEPTH_TEST);
     glEnable(GL_TEXTURE_2D);
@@ -346,7 +397,9 @@ void init_gl() {
     
     // Allocate texture memory on the GPU
     glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, FRAME_WIDTH, FRAME_HEIGHT, 0,
-                 GL_RGB, GL_UNSIGNED_BYTE, rgb_frame);
+                 GL_RGB, GL_UNSIGNED_BYTE, rgb_frames[front_buffer_idx]); // NEW: use front buffer
+
+    glut_initialized = true; // Set flag to indicate GLUT is initialized
 }
 
 int main(int argc, char **argv) {
@@ -368,6 +421,24 @@ int main(int argc, char **argv) {
                     g_plane_orbit_distance = val;
                     i++; // Consume the value argument
                     printf("Argument: Plane orbit distance set to %f.\n", g_plane_orbit_distance);
+                } else {
+                    fprintf(stderr, "Error: Invalid float value for %s: %s\n", argv[i], argv[i+1]);
+                }
+            } else {
+                fprintf(stderr, "Error: %s requires a float value.\n", argv[i]);
+            }
+        } else if ((strcmp(argv[i], "-ps") == 0 || strcmp(argv[i], "--plane-scale") == 0)) {
+            if (i + 1 < argc) {
+                char *endptr;
+                float val = strtof(argv[i+1], &endptr);
+                if (endptr != argv[i+1] && *endptr == '\0') { // Check if conversion was successful
+                    g_plane_scale = val;
+                    if (g_plane_scale <= 0.0f) { // Basic validation for scale
+                        fprintf(stderr, "Warning: Plane scale should be positive. Using 1.0.\n");
+                        g_plane_scale = 1.0f;
+                    }
+                    i++; // Consume the value argument
+                    printf("Argument: Plane scale set to %f.\n", g_plane_scale);
                 } else {
                     fprintf(stderr, "Error: Invalid float value for %s: %s\n", argv[i], argv[i+1]);
                 }
