@@ -176,7 +176,7 @@ void init_v4l2() {
 
     // 2. Query capabilities
     if (ioctl(fd, VIDIOC_QUERYCAP, &cap) < 0) { perror("VIDIOC_QUERYCAP"); exit(EXIT_FAILURE); }
-    if (!(cap.capabilities & V4L2_CAP_VIDEO_CAPTURE)) {
+    if (!(cap.capabilities & V4L2_CAP_VIDEO_CAPTURE_MPLANE)) { 
         fprintf(stderr, "Device does not support video capture\n"); exit(EXIT_FAILURE);
     }
     if (!(cap.capabilities & V4L2_CAP_STREAMING)) {
