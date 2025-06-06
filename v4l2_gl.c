@@ -45,6 +45,10 @@ static bool use_viture_imu = false;
 static volatile float viture_roll = 0.0f;
 static volatile float viture_pitch = 0.0f;
 static volatile float viture_yaw = 0.0f;
+static float initial_roll_offset = 0.0f;  // NEW: To store the initial roll offset
+static float initial_pitch_offset = 0.0f; // NEW: To store the initial pitch offset
+static float initial_yaw_offset = 0.0f;   // To store the initial yaw offset
+static bool initial_offsets_set = false;  // NEW: Flag to ensure all offsets are set only once
 
 // --- Helper Functions ---
 
@@ -65,11 +69,20 @@ static void viture_imu_callback(uint8_t *data, uint16_t len, uint32_t ts) {
     // We only need the first 12 bytes for Euler angles
     if (len < 12) return;
 
-    // Invert pitch and roll for a more natural camera control feel.
-    // You may need to experiment with signs depending on desired behavior.
+    // NEW: Set initial offsets on first valid IMU data if using Viture
+    if (use_viture_imu && !initial_offsets_set) {
+        initial_roll_offset = makeFloat(data);
+        initial_pitch_offset = makeFloat(data + 4); // MODIFIED: Pitch inversion removed for offset
+        initial_yaw_offset = -makeFloat(data + 8);   // MODIFIED: Yaw inverted for offset
+        initial_offsets_set = true;
+        printf("Viture: Initial offsets captured: Roll=%f, Pitch=%f, Yaw=%f\n", initial_roll_offset, initial_pitch_offset, initial_yaw_offset);
+    }
+
+    // Adjust pitch and yaw based on feedback.
+    // Roll remains as is.
     viture_roll = makeFloat(data);
-    viture_pitch = -makeFloat(data + 4);
-    viture_yaw = makeFloat(data + 8);
+    viture_pitch = makeFloat(data + 4); // MODIFIED: Pitch inversion removed
+    viture_yaw = -makeFloat(data + 8);  // MODIFIED: Yaw inverted
     
     // Uncomment for debugging IMU data
     // LOG("IMU data: Roll=%f, Pitch=%f, Yaw=%f\n", viture_roll, viture_pitch, viture_yaw);
@@ -250,9 +263,9 @@ void display() {
         // Apply rotation from Viture glasses IMU
         // The order of rotations (e.g., Yaw, Pitch, Roll) is important.
         // This order often feels natural for head tracking.
-        glRotatef(viture_yaw, 0.0f, 1.0f, 0.0f);   // Yaw around Y-axis
-        glRotatef(viture_pitch, 1.0f, 0.0f, 0.0f); // Pitch around X-axis
-        glRotatef(viture_roll, 0.0f, 0.0f, 1.0f);  // Roll around Z-axis
+        glRotatef(viture_yaw - initial_yaw_offset, 0.0f, 1.0f, 0.0f);   // Yaw around Y-axis
+        glRotatef(viture_pitch - initial_pitch_offset, 1.0f, 0.0f, 0.0f); // Pitch around X-axis
+        glRotatef(viture_roll - initial_roll_offset, 0.0f, 0.0f, 1.0f);  // Roll around Z-axis
     } else {
         // Fallback to the original automatic rotation
         static float angle = 0.0f;
