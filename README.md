@@ -4,7 +4,7 @@
 
 v4l2_gl captures video from a HDMI-in on an OrangePI 5 Plus using the hdmirx V4L2 device, converts frames to RGB, and displays them in real-time on a textured quad in an OpenGL window. It supports Viture headset IMU integration, test patterns, and plane geometry.
 
-![Diagram of virtual display](assets/virtual_display.png)
+![Diagram of virtual display](https://github.com/mgschwan/viture_virtual_display/blob/main/assets/virtual_display.png?raw=true)
 ## Prerequisites
 
 To run this as intended you need an OrangePi 5 Plus with armbian ( we are using BredOS ) that has Device Tree Overlays enabled and has the hdmi-rx device tree overlay active.
