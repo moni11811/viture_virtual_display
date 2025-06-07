@@ -1,20 +1,15 @@
-// Define POSIX source for barriers before any includes
-#define _POSIX_C_SOURCE 200809L 
-// Alternatively, try #define _XOPEN_SOURCE 700 if the above doesn't work
+/*  Read the IMU information from the Viture Pro XR glasses 
+    data is sent through HID via USB
 
-/* Read the IMU information from the Viture Pro XR glasses 
-   data is sent through HID via USB
+    The data is polled continuously from the glasses and the callback is called with the data
 
-   The data is polled continuously from the glasses and the callback is called with the data
-
-   This file implements a reverse engineered version of the protocol instead of the official SDK.
+    This file implements a reverse engineered version of the protocol instead of the official SDK.
 
 
     There are two hid interfaces the MCU and IMU
 
     MCU is used for sending commands to the glasses and receiving events
     IMU is used for receiving the IMU data
-
 */
 
 #include <stdio.h>
@@ -30,19 +25,15 @@
 #include <stdint.h> // For uint8_t, uint16_t, uint32_t
 #include <stdbool.h>
 
-// START OF VITURE SDK REIMPLEMENTATION
 #include <hidapi/hidapi.h>
 #include <sys/time.h> // For gettimeofday
 
-// Type definitions for clarity (matching decompiled SDK)
 typedef unsigned char uchar;
 typedef unsigned short ushort;
 typedef unsigned int uint;
 
 // VID and PID for Viture glasses
 #define VITURE_VENDOR_ID  0x35CA
-#define VITURE_PRODUCT_ID 0x0021 // Product ID might vary or not be specific enough.
-                                 // We will rely on interface numbers.
 #define MCU_INTERFACE_NUMBER 1 // Common for Viture One
 #define IMU_INTERFACE_NUMBER 0 // Common for Viture One
 
@@ -115,7 +106,6 @@ static viture_mcu_event_callback_t ext_mcu_event_callback = NULL;
 static viture_imu_data_callback_t ext_imu_data_callback = NULL;
 
 
-// Forward declarations
 static void native_imu_deinit(void);
 static void native_mcu_deinit(void);
 
@@ -127,8 +117,6 @@ static char* find_hid_device_path(int vid, int pid, int interface_number) {
     devs = hid_enumerate(vid, pid);
     cur_dev = devs;
     while (cur_dev) {
-        printf("Found HID device: VID=0x%04X, PID=0x%04X, Interface=%d, Path=%s\n",
-               cur_dev->vendor_id, cur_dev->product_id, cur_dev->interface_number, cur_dev->path);
         if (cur_dev->interface_number == interface_number) {
             path = strdup(cur_dev->path);
             break;
@@ -153,7 +141,6 @@ static hid_device* open_hid_interface(const char* path) {
 
 // --- Command Building and Parsing ---
 
-// cmd_build(unsigned short cmd_id, unsigned char* data, unsigned short data_len, unsigned char* out_buf, unsigned short* out_len)
 static void cmd_build(ushort cmd_id, uchar *data, ushort data_len, uchar *out_buf, ushort *out_total_len) {
     memset(out_buf, 0, 0x40); // Max packet size is 64 bytes for HID
 
@@ -188,7 +175,6 @@ static void cmd_build(ushort cmd_id, uchar *data, ushort data_len, uchar *out_bu
     *out_total_len = 0x40; // Always send 64 bytes for HID report
 }
 
-// parse_rsp(unsigned char* rsp_buf, unsigned short rsp_len, unsigned char* out_data, unsigned short* out_data_len, unsigned short* out_cmd_id)
 static void parse_rsp(uchar *rsp_buf, ushort total_rsp_len, uchar *out_data, ushort *out_data_len, ushort *out_cmd_id) {
     if (total_rsp_len == 0) {
         fprintf(stderr, "parse_rsp: invalid response (length 0)\n");
@@ -239,7 +225,6 @@ static void parse_rsp(uchar *rsp_buf, ushort total_rsp_len, uchar *out_data, ush
 }
 
 // --- Command Synchronization ---
-// cmd_wait(int timeout_sec)
 static int cmd_wait(int timeout_sec) {
     struct timespec ts;
     struct timeval tv;
@@ -256,7 +241,6 @@ static int cmd_wait(int timeout_sec) {
     return ret; // 0 if signaled, ETIMEDOUT if timeout
 }
 
-// cmd_release()
 static void cmd_release(void) {
     pthread_mutex_lock(&lock_cmd);
     pthread_cond_signal(&signal_cond_cmd);
@@ -281,7 +265,6 @@ static void imu_update(uchar *data, ushort len, uint timestamp) {
 }
 
 
-// mcu_thread(void*)
 static void* mcu_thread(void *arg) {
     // uchar read_buf[0x100]; // Unused
     // int bytes_read_total = 0; // Unused
@@ -365,7 +348,6 @@ static void* mcu_thread(void *arg) {
     return NULL;
 }
 
-// imu_thread(void*)
 static void* imu_thread(void *arg) {
     (void)arg; // Unused
 
@@ -411,7 +393,6 @@ static void* imu_thread(void *arg) {
 }
 
 // --- Core Command Execution ---
-// cmd_exec(hid_device_*, unsigned short, unsigned char*, unsigned short, unsigned char**, unsigned short*)
 // This function sends a command and waits for a response via g_mcu_rsp, filled by mcu_thread.
 // Returns status code from response payload (byte 0).
 static uint cmd_exec(hid_device *dev, ushort cmd_id, uchar *data, ushort data_len, uchar **rsp_data, ushort *rsp_data_len) {
@@ -552,7 +533,6 @@ static void stopReadImu(void) {
 }
 
 // --- Native Init/Deinit ---
-// native_mcu_init(int fd_num) -> fd_num not used, uses path
 bool native_mcu_init(void) {
     if (g_mcu_dev) return true; // Already initialized
 
@@ -588,7 +568,6 @@ void native_mcu_deinit(void) {
     }
 }
 
-// native_imu_init(int fd_num) -> fd_num not used, uses path
 bool native_imu_init(void) {
     if (g_imu_dev) return true;
 
@@ -618,13 +597,11 @@ void native_imu_deinit(void) {
 }
 
 // --- Public API ---
-// native_mcu_exec(int cmd_id, int data_byte)
 // Sends a command with a single byte of data.
 uint native_mcu_exec(ushort cmd_id, uchar data_byte) {
     return cmd_exec(g_mcu_dev, cmd_id, &data_byte, 1, NULL, NULL);
 }
 
-// set_imu(char enable)
 // Command ID for set_imu is 0x15 from decompiled SDK
 // Data: 0 for off, 1 for on.
 uint set_imu(bool enable) {
@@ -721,4 +698,3 @@ void viture_driver_close(void) {
     fprintf(stderr, "Viture driver closed.\n");
 }
 
-// END OF VITURE SDK REIMPLEMENTATION

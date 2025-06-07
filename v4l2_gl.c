@@ -643,7 +643,6 @@ if (use_viture_imu) {
         glutCreateWindow("V4L2 Real-time Display");
     }
     
-    // IMPORTANT: init_v4l2() must be called before init_gl() so actual_frame_width/height are set
     init_v4l2(); 
     init_gl();   
 
