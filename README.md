@@ -109,6 +109,10 @@ This command would:
 - Display the test pattern.
 
 
+## Demo
+
+[![Video demo](https://img.youtube.com/vi/D6w5kAA22Ts/0.jpg)](https://youtu.be/D6w5kAA22Ts)
+
 
 ## TODO
 
