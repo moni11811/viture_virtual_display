@@ -18,6 +18,8 @@
 
 #ifdef USE_VITURE
 #include "3rdparty/include/viture.h"
+#else
+#include "viture_connection.h" // Include our own Viture connection header
 #endif
 
 // --- V4L2 and Frame Configuration ---
@@ -280,13 +282,18 @@ void init_v4l2() {
 
 void cleanup() {
     printf("Cleaning up...\n");
-#ifdef USE_VITURE
     if (use_viture_imu) {
         printf("Viture: Disabling IMU and de-initializing...\n");
+
+#ifdef USE_VITURE
         set_imu(false);
         deinit();
-    }
+#else
+        set_imu(false);
+        viture_driver_close();
 #endif
+
+}
 
     if (fd != -1) {
         enum v4l2_buf_type stream_type = V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE; // MODIFIED for MPLANE
@@ -532,14 +539,28 @@ int main(int argc, char **argv) {
     
     printf("Starting V4L2-OpenGL real-time viewer...\n");
 
+if (use_viture_imu) {
+
 #ifdef USE_VITURE
-    if (use_viture_imu) {
-        printf("Viture: Initializing with IMU callback...\n");
-        init(viture_imu_callback, viture_mcu_callback);
-        set_imu(true); // Start the IMU data stream
-        printf("Viture: IMU stream enabled.\n");
+    printf("Viture: Initializing with IMU callback...\n");
+    init(viture_imu_callback, viture_mcu_callback);
+    set_imu(true); // Start the IMU data stream
+    printf("Viture: IMU stream enabled.\n");
+
+#else
+    if (!viture_driver_init()) {
+        fprintf(stderr, "Test: Failed to initialize Viture driver.\n");
+        return 1;
+    }
+
+    //viture_set_imu_data_callback(viture_imu_callback);
+
+    uint32_t imu_set_status = set_imu(true);
+    if (imu_set_status != 0) {
+        fprintf(stderr, "Test: set_imu(true) command failed with status %u.\n", imu_set_status);
     }
 #endif
+}
 
     glutInit(&argc, argv);
     glutInitDisplayMode(GLUT_DOUBLE | GLUT_RGB | GLUT_DEPTH);

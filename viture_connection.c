@@ -30,49 +30,6 @@
 #include <stdint.h> // For uint8_t, uint16_t, uint32_t
 #include <stdbool.h>
 
-static bool use_viture_imu = false;
-// Use volatile to prevent compiler from optimizing away reads, as these are
-// updated by a different thread (the Viture callback thread).
-/*static*/ volatile float viture_roll = 0.0f; // Remove static for external linkage
-/*static*/ volatile float viture_pitch = 0.0f; // Remove static for external linkage
-/*static*/ volatile float viture_yaw = 0.0f;   // Remove static for external linkage
-static float initial_roll_offset = 0.0f;  
-static float initial_pitch_offset = 0.0f; 
-static float initial_yaw_offset = 0.0f;  
-static bool initial_offsets_set = false; 
-
-
-static float makeFloat(uint8_t *data) {
-    float value = 0;
-    uint8_t tem[4];
-    tem[0] = data[3];
-    tem[1] = data[2];
-    tem[2] = data[1];
-    tem[3] = data[0];
-    memcpy(&value, tem, 4);
-    return value;
-}
-
-static void viture_imu_callback(uint8_t *data, uint16_t len, uint32_t ts) {
-    // We only need the first 12 bytes for Euler angles
-    if (len < 12) return;
-
-    // NEW: Set initial offsets on first valid IMU data if using Viture
-    if (use_viture_imu && !initial_offsets_set) {
-        initial_roll_offset = makeFloat(data);
-        initial_pitch_offset = makeFloat(data + 4); 
-        initial_yaw_offset = -makeFloat(data + 8);
-        initial_offsets_set = true;
-        printf("Viture: Initial offsets captured: Roll=%f, Pitch=%f, Yaw=%f\n", initial_roll_offset, initial_pitch_offset, initial_yaw_offset);
-    }
-
-    // Adjust pitch and yaw based on feedback.
-    // Roll remains as is.
-    viture_roll = makeFloat(data);
-    viture_pitch = makeFloat(data + 4);
-    viture_yaw = -makeFloat(data + 8);
-}
-
 // START OF VITURE SDK REIMPLEMENTATION
 #include <hidapi/hidapi.h>
 #include <sys/time.h> // For gettimeofday
@@ -153,6 +110,11 @@ static pthread_barrier_t barrier_imu;
 typedef void (*viture_mcu_event_callback_t)(ushort event_id, uchar *data, ushort len, uint timestamp);
 static viture_mcu_event_callback_t ext_mcu_event_callback = NULL;
 
+// IMU Data callback
+#include "viture_connection.h" // For viture_imu_data_callback_t
+static viture_imu_data_callback_t ext_imu_data_callback = NULL;
+
+
 // Forward declarations
 static void native_imu_deinit(void);
 static void native_mcu_deinit(void);
@@ -165,6 +127,8 @@ static char* find_hid_device_path(int vid, int pid, int interface_number) {
     devs = hid_enumerate(vid, pid);
     cur_dev = devs;
     while (cur_dev) {
+        printf("Found HID device: VID=0x%04X, PID=0x%04X, Interface=%d, Path=%s\n",
+               cur_dev->vendor_id, cur_dev->product_id, cur_dev->interface_number, cur_dev->path);
         if (cur_dev->interface_number == interface_number) {
             path = strdup(cur_dev->path);
             break;
@@ -311,9 +275,9 @@ static void event_update(ushort event_id, uchar *data, ushort len, uint timestam
 
 static void imu_update(uchar *data, ushort len, uint timestamp) {
     // This function is called from imu_thread
-    // The existing viture_imu_callback will handle the data
-    // fprintf(stderr, "IMU Data: Len=%d, TS=%u\n", len, timestamp);
-    viture_imu_callback(data, len, timestamp);
+    if (ext_imu_data_callback) {
+        ext_imu_data_callback(data, len, timestamp);
+    }
 }
 
 
@@ -672,10 +636,6 @@ uint set_imu(bool enable) {
     uint result = native_mcu_exec(0x15, enable ? 1 : 0);
     if (result == 0) { // Assuming 0 means success from command payload
         fprintf(stderr, "Set IMU %s successful.\n", enable ? "ON" : "OFF");
-        use_viture_imu = enable; // Update global state used by processing logic
-        if (!enable) { // Reset offsets if IMU is turned off
-            initial_offsets_set = false;
-        }
     } else {
         fprintf(stderr, "Set IMU %s failed with code %u.\n", enable ? "ON" : "OFF", result);
     }
@@ -684,6 +644,10 @@ uint set_imu(bool enable) {
 
 void viture_set_mcu_event_callback(viture_mcu_event_callback_t callback) {
     ext_mcu_event_callback = callback;
+}
+
+void viture_set_imu_data_callback(viture_imu_data_callback_t callback) {
+    ext_imu_data_callback = callback;
 }
 
 // Main Init/Deinit for the driver
