@@ -24,15 +24,16 @@
 
 // --- V4L2 and Frame Configuration ---
 #define DEVICE_PATH      "/dev/video0"
-#define FRAME_WIDTH      1920
-#define FRAME_HEIGHT     1080
-// #define PIXEL_FORMAT     V4L2_PIX_FMT_NV24 // Will be determined dynamically
+#define FRAME_WIDTH      1920 // Requested width
+#define FRAME_HEIGHT     1080 // Requested height
 #define BUFFER_COUNT     4
 
 // --- Global variables for V4L2 ---
 static enum v4l2_buf_type active_buffer_type;
 static __u32 active_pixel_format;
-// NEW: Structures for multi-planar buffer handling
+static int actual_frame_width = FRAME_WIDTH;   // Initialize with requested, update with actual
+static int actual_frame_height = FRAME_HEIGHT; // Initialize with requested, update with actual
+
 struct plane_info {
     void   *start;
     size_t length;
@@ -40,37 +41,33 @@ struct plane_info {
 
 struct mplane_buffer {
     struct plane_info planes[VIDEO_MAX_PLANES];
-    unsigned int num_planes_in_buffer; // Actual number of planes for this buffer type
+    unsigned int num_planes_in_buffer; 
 };
 
 static int fd = -1;
-// static struct buffer *buffers = NULL; // OLD
-static struct mplane_buffer *buffers_mp = NULL; // NEW for MPLANE
+static struct mplane_buffer *buffers_mp = NULL; 
 static unsigned int n_buffers = 0;
-static unsigned int num_planes_per_buffer = 0; // Expected number of planes (e.g., 2 for NV24)
+static unsigned int num_planes_per_buffer = 0; 
 
 
 // --- Global variables for OpenGL ---
 static GLuint texture_id;
-// static unsigned char *rgb_frame = NULL; // OLD single buffer
-static unsigned char *rgb_frames[2] = {NULL, NULL}; // NEW: Double buffers for RGB frame
-static int front_buffer_idx = 0;                   // NEW: Index of the buffer currently displayed
-static int back_buffer_idx = 1;                    // NEW: Index of the buffer being written to
-static volatile bool new_frame_captured = false;   // NEW: Flag to indicate a new frame is in back buffer
-static pthread_mutex_t frame_mutex;                // NEW: Mutex for synchronizing buffer access
+static unsigned char *rgb_frames[2] = {NULL, NULL}; 
+static int front_buffer_idx = 0;                   
+static int back_buffer_idx = 1;                    
+static volatile bool new_frame_captured = false;   
+static pthread_mutex_t frame_mutex;                
 
 static bool glut_initialized = false;
 
 static int fullscreen_mode = 0; 
-static int display_test_pattern = 0;                // For -tp flag (ensure it's here)
-static float g_plane_orbit_distance = 1.0f;         // For -pd flag, default to 1.0
-static float g_plane_scale = 1.0f;                  // NEW: For scaling the plane
+static int display_test_pattern = 0;                
+static float g_plane_orbit_distance = 1.0f;         
+static float g_plane_scale = 1.0f;                  
 
 // --- Helper Functions ---
 
 static bool use_viture_imu = false;
-// Use volatile to prevent compiler from optimizing away reads, as these are
-// updated by a different thread (the Viture callback thread).
 static volatile float viture_roll = 0.0f;
 static volatile float viture_pitch = 0.0f;
 static volatile float viture_yaw = 0.0f;
@@ -78,8 +75,6 @@ static float initial_roll_offset = 0.0f;
 static float initial_pitch_offset = 0.0f; 
 static float initial_yaw_offset = 0.0f;  
 static bool initial_offsets_set = false; 
-
-// --- Helper Functions ---
 
 static float makeFloat(uint8_t *data) {
     float value = 0;
@@ -92,12 +87,8 @@ static float makeFloat(uint8_t *data) {
     return value;
 }
 
-// This is the viture_imu_callback specific to v4l2_gl.c, used if USE_VITURE is defined
-// OR if our own viture_connection driver is used AND this callback is registered with it.
-// For our own driver, default_viture_imu_data_handler in viture_connection.c is now the one
-// that directly updates global viture_roll, etc.
 static void app_viture_imu_data_handler(uint8_t *data, uint16_t len, uint32_t ts) {
-    (void)ts; // ts might be unused for now in this specific handler
+    (void)ts; 
     if (len < 12) return;
 
     if (use_viture_imu && !initial_offsets_set) {
@@ -115,11 +106,9 @@ static void app_viture_imu_data_handler(uint8_t *data, uint16_t len, uint32_t ts
     if ( glut_initialized ) glutPostRedisplay();
 }
 
-// This is the viture_mcu_callback specific to v4l2_gl.c, used if USE_VITURE is defined
-// OR if our own viture_connection driver is used AND this callback is registered with it.
 static void app_viture_mcu_event_handler(uint16_t msgid, uint8_t *data, uint16_t len, uint32_t ts)
 {
-    (void)ts; // ts might be unused
+    (void)ts; 
     printf("V4L2_GL MCU Event: ID=0x%04X, Len=%u, Data: ", msgid, len);
     for (uint16_t i = 0; i < len; i++) {
         printf("%02X ", data[i]);
@@ -134,7 +123,6 @@ static inline unsigned char clamp(int val) {
     return (unsigned char)val;
 }
 
-// Convert a single NV24 frame to RGB24
 void convert_nv24_to_rgb(const unsigned char *y_plane_data, const unsigned char *uv_plane_data, unsigned char *rgb, int width, int height) {
     const unsigned char *y_plane = y_plane_data;
     const unsigned char *uv_plane = uv_plane_data;
@@ -166,11 +154,10 @@ void convert_nv24_to_rgb(const unsigned char *y_plane_data, const unsigned char 
 // Forward declaration
 void fill_frame_with_pattern( unsigned char *rgb, int width, int height );
 
-// Convert YUYV (YUV 4:2:2 packed) to RGB24
 void convert_yuyv_to_rgb(const unsigned char *yuyv_data, unsigned char *rgb, int width, int height, size_t bytesused) {
     if (bytesused < (size_t)width * height * 2) {
         fprintf(stderr, "convert_yuyv_to_rgb: Not enough data. Expected %d, got %zu\n", width*height*2, bytesused);
-        fill_frame_with_pattern(rgb, width, height); // Fill with pattern on error
+        fill_frame_with_pattern(rgb, width, height); 
         return;
     }
 
@@ -180,22 +167,14 @@ void convert_yuyv_to_rgb(const unsigned char *yuyv_data, unsigned char *rgb, int
             int rgb_idx1 = (y_coord * width + x_coord) * 3;
             int rgb_idx2 = (y_coord * width + x_coord + 1) * 3;
 
-            // Ensure yuyv_idx is non-negative before comparison with unsigned bytesused
             if (yuyv_idx < 0 || (size_t)(yuyv_idx + 3) >= bytesused) { 
                 fprintf(stderr, "convert_yuyv_to_rgb: YUYV index out of bounds.\n");
                 continue;
             }
-            // Ensure rgb_idx2 is non-negative before comparison
              if (x_coord + 1 < width && (rgb_idx2 < 0 || (size_t)(rgb_idx2 + 2) >= (size_t)width*height*3)) { 
                 fprintf(stderr, "convert_yuyv_to_rgb: RGB index out of bounds for second pixel.\n");
                 continue;
             }
-            // Ensure rgb_idx2 is non-negative before comparison
-             if (x_coord + 1 < width && (rgb_idx2 < 0 || (size_t)(rgb_idx2 + 2) >= (size_t)width*height*3)) { 
-                fprintf(stderr, "convert_yuyv_to_rgb: RGB index out of bounds for second pixel.\n");
-                continue;
-            }
-
 
             int y0 = yuyv_data[yuyv_idx + 0];
             int u  = yuyv_data[yuyv_idx + 1];
@@ -211,7 +190,6 @@ void convert_yuyv_to_rgb(const unsigned char *yuyv_data, unsigned char *rgb, int
 
             if (x_coord + 1 < width) { 
                 int c2 = y1 - 16;
-                // U and V are shared for both pixels (d1, e1 can be reused as d2, e2)
                 rgb[rgb_idx2 + 0] = clamp((298 * c2 + 409 * e1 + 128) >> 8);
                 rgb[rgb_idx2 + 1] = clamp((298 * c2 - 100 * d1 - 208 * e1 + 128) >> 8);
                 rgb[rgb_idx2 + 2] = clamp((298 * c2 + 516 * d1 + 128) >> 8);
@@ -231,8 +209,6 @@ void fill_frame_with_pattern( unsigned char *rgb, int width, int height ) {
         }
     }
 }
-
-
 
 // --- V4L2 Initialization ---
 void init_v4l2() {
@@ -274,22 +250,23 @@ void init_v4l2() {
         if (ioctl(fd, VIDIOC_S_FMT, &fmt) == 0) {
             active_pixel_format = fmt.fmt.pix_mp.pixelformat;
             num_planes_per_buffer = fmt.fmt.pix_mp.num_planes;
-            if (num_planes_per_buffer >= 2 && active_pixel_format == V4L2_PIX_FMT_NV24) { // Check if NV24 with 2 planes was accepted
-                 printf("V4L2: Format set to %dx%d, pixelformat NV24, %u planes (MPLANE)\n",
-                       fmt.fmt.pix_mp.width, fmt.fmt.pix_mp.height, num_planes_per_buffer);
+            if (num_planes_per_buffer >= 2 && active_pixel_format == V4L2_PIX_FMT_NV24) {
+                actual_frame_width = fmt.fmt.pix_mp.width;
+                actual_frame_height = fmt.fmt.pix_mp.height;
+                printf("V4L2: Format set to %dx%d, pixelformat NV24, %u planes (MPLANE)\n",
+                       actual_frame_width, actual_frame_height, num_planes_per_buffer);
                 format_set = true;
             } else {
                  fprintf(stderr, "V4L2: Device did not accept NV24 with 2 planes as expected. Planes: %u, Format: %c%c%c%c\n",
                     num_planes_per_buffer, (active_pixel_format)&0xFF, (active_pixel_format>>8)&0xFF,
                     (active_pixel_format>>16)&0xFF, (active_pixel_format>>24)&0xFF);
-                // Fallback will be attempted below
             }
         } else {
             perror("VIDIOC_S_FMT (MPLANE NV24) failed");
         }
     }
     
-    if (!format_set) { // Try single-plane YUYV if MPLANE NV24 failed or if single-plane device
+    if (!format_set) { 
         printf("V4L2: Attempting single-plane YUYV format.\n");
         active_buffer_type = V4L2_BUF_TYPE_VIDEO_CAPTURE; 
         fmt.type = active_buffer_type; 
@@ -300,18 +277,17 @@ void init_v4l2() {
         if (ioctl(fd, VIDIOC_S_FMT, &fmt) == 0) {
             active_pixel_format = fmt.fmt.pix.pixelformat;
             num_planes_per_buffer = 1; 
+            actual_frame_width = fmt.fmt.pix.width;
+            actual_frame_height = fmt.fmt.pix.height;
             printf("V4L2: Format set to %dx%d, pixelformat YUYV (SINGLE-PLANE)\n",
-                   fmt.fmt.pix.width, fmt.fmt.pix.height);
+                   actual_frame_width, actual_frame_height);
             format_set = true;
         } else {
             perror("VIDIOC_S_FMT (SINGLE-PLANE YUYV) also failed.");
-            // Optionally, try MJPEG as a last resort for single-plane
-            // fmt.fmt.pix.pixelformat = V4L2_PIX_FMT_MJPEG;
-            // if (ioctl(fd, VIDIOC_S_FMT, &fmt) == 0) { ... }
             exit(EXIT_FAILURE);
         }
     }
-    if (!format_set) { // Should not happen if one of the S_FMT succeeded
+    if (!format_set) { 
         fprintf(stderr, "V4L2: Failed to set any video format.\n");
         exit(EXIT_FAILURE);
     }
@@ -391,8 +367,8 @@ void cleanup() {
         printf("Viture: Disabling IMU and de-initializing...\n");
 
 #ifdef USE_VITURE
-        set_imu(false); // Assumes this is from 3rdparty/include/viture.h
-        deinit();       // Assumes this is from 3rdparty/include/viture.h
+        set_imu(false); 
+        deinit();       
 #else
         set_imu(false); 
         viture_driver_close(); 
@@ -455,9 +431,9 @@ void display() {
     pthread_mutex_unlock(&frame_mutex);
 
     glBindTexture(GL_TEXTURE_2D, texture_id);
-    if ( generate_texture ) glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, FRAME_WIDTH, FRAME_HEIGHT, GL_RGB, GL_UNSIGNED_BYTE, rgb_frames[front_buffer_idx]);
+    if ( generate_texture ) glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, actual_frame_width, actual_frame_height, GL_RGB, GL_UNSIGNED_BYTE, rgb_frames[front_buffer_idx]);
 
-    float aspect_ratio = (float)FRAME_WIDTH / (float)FRAME_HEIGHT;
+    float aspect_ratio = (float)actual_frame_width / (float)actual_frame_height;
     glBegin(GL_QUADS);
         glTexCoord2f(0.0f, 1.0f); glVertex3f(-aspect_ratio, -1.0f, 0.0f);
         glTexCoord2f(1.0f, 1.0f); glVertex3f( aspect_ratio, -1.0f, 0.0f);
@@ -497,36 +473,35 @@ void capture_and_update() {
     }
     
     if (display_test_pattern) {
-        fill_frame_with_pattern(rgb_frames[back_buffer_idx], FRAME_WIDTH, FRAME_HEIGHT);
+        fill_frame_with_pattern(rgb_frames[back_buffer_idx], actual_frame_width, actual_frame_height);
     } else {
         if (active_buffer_type == V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE) {
             if (active_pixel_format == V4L2_PIX_FMT_NV24 && num_planes_per_buffer >= 2) {
                 convert_nv24_to_rgb(
                     (const unsigned char *)buffers_mp[buf.index].planes[0].start,
                     (const unsigned char *)buffers_mp[buf.index].planes[1].start,
-                    rgb_frames[back_buffer_idx], FRAME_WIDTH, FRAME_HEIGHT);
+                    rgb_frames[back_buffer_idx], actual_frame_width, actual_frame_height);
             } else if (active_pixel_format == V4L2_PIX_FMT_NV24 && num_planes_per_buffer == 1) { 
-                // This case was modified by the user - assumes NV24 data packed in one plane
                 convert_nv24_to_rgb(
                     (const unsigned char *)buffers_mp[buf.index].planes[0].start,
-                    (const unsigned char *)buffers_mp[buf.index].planes[0].start + FRAME_WIDTH * FRAME_HEIGHT, // Offset for UV data
-                    rgb_frames[back_buffer_idx], FRAME_WIDTH, FRAME_HEIGHT);
+                    (const unsigned char *)buffers_mp[buf.index].planes[0].start + actual_frame_width * actual_frame_height, 
+                    rgb_frames[back_buffer_idx], actual_frame_width, actual_frame_height);
             } else {
                  fprintf(stderr, "Error: Unsupported MPLANE pixel format %c%c%c%c or plane count %u\n",
                         (active_pixel_format)&0xFF, (active_pixel_format>>8)&0xFF,
                         (active_pixel_format>>16)&0xFF, (active_pixel_format>>24)&0xFF,
                         num_planes_per_buffer);
-                fill_frame_with_pattern(rgb_frames[back_buffer_idx], FRAME_WIDTH, FRAME_HEIGHT);
+                fill_frame_with_pattern(rgb_frames[back_buffer_idx], actual_frame_width, actual_frame_height);
             }
         } else { // Single-plane
             if (active_pixel_format == V4L2_PIX_FMT_YUYV) {
                 convert_yuyv_to_rgb((const unsigned char *)buffers_mp[buf.index].planes[0].start, 
-                                     rgb_frames[back_buffer_idx], FRAME_WIDTH, FRAME_HEIGHT, buf.bytesused);
+                                     rgb_frames[back_buffer_idx], actual_frame_width, actual_frame_height, buf.bytesused);
             } else {
                  fprintf(stderr, "Error: Unsupported SINGLE-PLANE pixel format %c%c%c%c\n",
                         (active_pixel_format)&0xFF, (active_pixel_format>>8)&0xFF,
                         (active_pixel_format>>16)&0xFF, (active_pixel_format>>24)&0xFF);
-                fill_frame_with_pattern(rgb_frames[back_buffer_idx], FRAME_WIDTH, FRAME_HEIGHT);
+                fill_frame_with_pattern(rgb_frames[back_buffer_idx], actual_frame_width, actual_frame_height);
             }
         }
     }
@@ -553,15 +528,17 @@ void init_gl() {
         exit(EXIT_FAILURE);
     }
 
-    rgb_frames[0] = malloc(FRAME_WIDTH * FRAME_HEIGHT * 3);
-    rgb_frames[1] = malloc(FRAME_WIDTH * FRAME_HEIGHT * 3);
+    // Allocate RGB frames based on actual dimensions AFTER V4L2 init
+    // This means init_gl() should be called after init_v4l2()
+    rgb_frames[0] = malloc(actual_frame_width * actual_frame_height * 3);
+    rgb_frames[1] = malloc(actual_frame_width * actual_frame_height * 3);
 
     if (!rgb_frames[0] || !rgb_frames[1]) {
         fprintf(stderr, "Failed to allocate memory for RGB frames\n");
         exit(EXIT_FAILURE);
     }
-    memset(rgb_frames[0], 0, FRAME_WIDTH * FRAME_HEIGHT * 3);
-    memset(rgb_frames[1], 0, FRAME_WIDTH * FRAME_HEIGHT * 3);
+    memset(rgb_frames[0], 0, actual_frame_width * actual_frame_height * 3);
+    memset(rgb_frames[1], 0, actual_frame_width * actual_frame_height * 3);
 
     glEnable(GL_DEPTH_TEST);
     glEnable(GL_TEXTURE_2D);
@@ -574,7 +551,7 @@ void init_gl() {
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
     
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, FRAME_WIDTH, FRAME_HEIGHT, 0,
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, actual_frame_width, actual_frame_height, 0,
                  GL_RGB, GL_UNSIGNED_BYTE, rgb_frames[front_buffer_idx]); 
 
     glut_initialized = true; 
@@ -630,28 +607,21 @@ int main(int argc, char **argv) {
 
 if (use_viture_imu) {
 #ifdef USE_VITURE
-    // This block uses the official Viture SDK (assumed to be in 3rdparty)
     printf("Viture: Initializing with official SDK...\n");
-    // The 'init' and 'set_imu' here are from the official SDK's viture.h
-    // Their signatures might be different from our reimplemented ones.
-    // The app_viture_imu_data_handler and app_viture_mcu_event_handler are local to v4l2_gl.c
     init(app_viture_imu_data_handler, app_viture_mcu_event_handler); 
     set_imu(true); 
     printf("Viture: IMU stream enabled via official SDK.\n");
 #else
-    // This block uses our reimplemented Viture driver (viture_connection.c)
     printf("Viture: Initializing with custom driver...\n");
     if (!viture_driver_init()) { 
         fprintf(stderr, "V4L2_GL: Failed to initialize custom Viture driver.\n");
-        // Decide if this is fatal or if the app can continue without IMU
-        use_viture_imu = false; // Disable IMU features if driver fails
+        use_viture_imu = false; 
     } else {
-        // Register callbacks with our driver
-        viture_set_imu_data_callback(app_viture_imu_data_handler); // Uses the handler in viture_connection.c
-        viture_set_mcu_event_callback(app_viture_mcu_event_handler); // Uses the handler in v4l2_gl.c
+        viture_set_imu_data_callback(app_viture_imu_data_handler); 
+        viture_set_mcu_event_callback(app_viture_mcu_event_handler); 
         
-        uint32_t imu_set_status = set_imu(true); // Calls our set_imu
-        if (imu_set_status != 0) { // Assuming 0 is success for our driver
+        uint32_t imu_set_status = set_imu(true); 
+        if (imu_set_status != 0) { 
             fprintf(stderr, "V4L2_GL: set_imu(true) command failed with status %u using custom driver.\n", imu_set_status);
         } else {
             printf("Viture: IMU stream enabled via custom driver.\n");
@@ -672,9 +642,10 @@ if (use_viture_imu) {
         glutInitWindowSize(1280, 720); 
         glutCreateWindow("V4L2 Real-time Display");
     }
-
-    init_gl();
-    init_v4l2();
+    
+    // IMPORTANT: init_v4l2() must be called before init_gl() so actual_frame_width/height are set
+    init_v4l2(); 
+    init_gl();   
 
     glutDisplayFunc(display);
     glutReshapeFunc(reshape);
