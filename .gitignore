@@ -1,3 +1,8 @@
+v4l2_gl
+v4l2_gl_viture_sdk
+test_viture
+
+
 # Prerequisites
 *.d
 
@@ -19,6 +24,7 @@
 *.lib
 *.la
 *.lo
+*.o
 
 # Shared objects (inc. Windows DLLs)
 *.dll

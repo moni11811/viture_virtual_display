@@ -7,6 +7,7 @@ CC = gcc
 
 # Target executable name
 TARGET = v4l2_gl
+TARGET_VITURE_SDK = v4l2_gl_viture_sdk
 TARGET_TEST = test_viture
 
 # Source files (add more .c files here if your project grows)
@@ -49,17 +50,25 @@ RM = rm -f
 
 # The default goal is 'all', which builds the target executable.
 # The .PHONY directive tells make that 'all' is not a file.
-.PHONY: all test
+.PHONY: all test viture_sdk
 all: $(TARGET)
 
 test: $(TARGET_TEST)
+
+viture_sdk: $(TARGET_VITURE_SDK)
 
 # Rule to link the object files into the final executable.
 # The executable depends on all the object files.
 $(TARGET): $(filter v4l2_gl.o viture_connection.o, $(OBJS))
 	@echo "==> Linking $(TARGET)..."
-	$(CC) -o $(TARGET) $(filter v4l2_gl.o viture_connection.o, $(OBJS)) $(VITURE_LIB) $(LIBS)
+	$(CC) -o $(TARGET) $(filter v4l2_gl.o viture_connection.o, $(OBJS)) $(LIBS)
 	@echo "==> Build complete: ./"$(TARGET)
+
+$(TARGET_VITURE_SDK): v4l2_gl_viture_sdk.o
+	@echo "==> Linking $(TARGET_VITURE_SDK)..."
+	$(CC) -o $(TARGET_VITURE_SDK) v4l2_gl_viture_sdk.o $(VITURE_LIB) $(LIBS)
+	@echo "==> Build complete: ./"$(TARGET_VITURE_SDK)
+
 
 # Rule to link the test_viture executable
 $(TARGET_TEST): $(filter test_viture.o viture_connection.o, $(OBJS_TEST))
@@ -76,10 +85,14 @@ $(TARGET_TEST): $(filter test_viture.o viture_connection.o, $(OBJS_TEST))
 	@echo "==> Compiling $<..."
 	$(CC) $(CFLAGS) -I. -c -o $@ $< # Added -I. for viture_connection.h
 
+v4l2_gl_viture_sdk.o: v4l2_gl.c
+	@echo "==> Compiling v4l2_gl_viture_sdk.o..."
+	$(CC) $(CFLAGS) -DUSE_VITURE -I. -c -o $@ v4l2_gl.c 
+
 # The 'clean' rule removes all generated files.
 # .PHONY tells make that 'clean' is not a file.
 .PHONY: clean
 clean:
 	@echo "==> Cleaning up..."
-	$(RM) $(TARGET) $(TARGET_TEST) $(OBJS) $(OBJS_TEST)
+	$(RM) $(TARGET) $(TARGET_TEST) $(TARGET_VITURE_SDK) $(OBJS) $(OBJS_TEST)
 	@echo "==> Done."

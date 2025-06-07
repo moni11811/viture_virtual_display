@@ -1,6 +1,6 @@
 # V4L2 OpenGL Real-time Viewer
 
-**Attention** this is still in development and not fully functional yet and only compiles on X86 systems not on the OrangePi yet because of the viture library which does not work on ARM.
+**Attention** this is still in development and not fully functional yet 
 
 v4l2_gl captures video from a HDMI-in on an OrangePI Plus using the hdmirx V4L2 device, converts frames to RGB, and displays them in real-time on a textured quad in an OpenGL window. It supports Viture headset IMU integration, test patterns, and plane geometry.
 
@@ -20,22 +20,44 @@ To compile and run this application, ensure the following libraries are installe
 -   **libv4l2 library**:
     This library is required for interacting with V4L2 devices. On Debian/Ubuntu-based systems, install it with:
     ```
-    sudo apt update
     sudo apt install libv4l-dev
     ```
 
+-   **libhidapi-dev** (optional): If your are using the revers engineered protocol instead of the official Viture SDK
+    ```
+    sudo apt install libhidapi-dev
+    ```
+
+
 ## Compilation
 
-### Using Makefile
+Depending on the architecture you are running it on use the reverse engineered protocol version ( ARM ) or the official Viture SDK version ( X86 )
+
+### Using the reverse engineered protocol
 ```
 make
 ```
+This will generate the executable **v4l2_gl**
+
+
+### Using the official Viture SDK
+```
+make viture_sdk
+```
+This will generate the executable **v4l2_gl_viture_sdk**
+
+
+
 
 ## Running the viewer
 
 Execute the compiled application from your terminal:
 ```
-./v4l2_gl [options]
+sudo ./v4l2_gl [options]
+```
+or
+```
+sudo ./v4l2_gl_viture_sdk [options]
 ```
 
 ### Command-Line Options
@@ -77,7 +99,3 @@ This command would:
 - Scale the plane to 120% of its original size.
 - Display the test pattern.
 
-
-## TODO
-
-* Access the Viture IMU directly through hidapi to go around the limitation of Viture SDK only being available for X86
