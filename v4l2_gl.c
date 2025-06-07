@@ -250,14 +250,14 @@ void init_v4l2() {
         if (ioctl(fd, VIDIOC_S_FMT, &fmt) == 0) {
             active_pixel_format = fmt.fmt.pix_mp.pixelformat;
             num_planes_per_buffer = fmt.fmt.pix_mp.num_planes;
-            if (num_planes_per_buffer >= 2 && active_pixel_format == V4L2_PIX_FMT_NV24) {
+            if ( ( num_planes_per_buffer == 1 || num_planes_per_buffer == 2 ) && active_pixel_format == V4L2_PIX_FMT_NV24) {
                 actual_frame_width = fmt.fmt.pix_mp.width;
                 actual_frame_height = fmt.fmt.pix_mp.height;
                 printf("V4L2: Format set to %dx%d, pixelformat NV24, %u planes (MPLANE)\n",
                        actual_frame_width, actual_frame_height, num_planes_per_buffer);
                 format_set = true;
             } else {
-                 fprintf(stderr, "V4L2: Device did not accept NV24 with 2 planes as expected. Planes: %u, Format: %c%c%c%c\n",
+                 fprintf(stderr, "V4L2: Device did not accept NV24 with 1 or 2 planes as expected. Planes: %u, Format: %c%c%c%c\n",
                     num_planes_per_buffer, (active_pixel_format)&0xFF, (active_pixel_format>>8)&0xFF,
                     (active_pixel_format>>16)&0xFF, (active_pixel_format>>24)&0xFF);
             }
