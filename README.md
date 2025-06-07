@@ -114,3 +114,4 @@ This command would:
 
  - Add support for USB HDMI capture cards to support SBCs that don't have HDMI-in like Raspberry PIs
  - Fix errors in reverse engineered viture SDK
+ - Improve performance of the hdmi texture conversion
