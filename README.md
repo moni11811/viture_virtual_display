@@ -1,4 +1,4 @@
-# V4L2 OpenGL Real-time Viewer
+# V4L2 Viture Virtual Display
 
 **Attention** this is still in development and not fully functional yet 
 
