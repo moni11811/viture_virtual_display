@@ -99,3 +99,8 @@ This command would:
 - Scale the plane to 120% of its original size.
 - Display the test pattern.
 
+
+
+## TODO
+
+ - Add support for USB HDMI capture cards to support SBCs that don't have HDMI-in like Raspberry PIs
