@@ -21,7 +21,7 @@
 #include <sys/ioctl.h>
 #include <sys/mman.h>
 
-#include <pthread.h> 
+#include <pthread.h>
 #include <stdint.h> // For uint8_t, uint16_t, uint32_t
 #include <stdbool.h>
 
@@ -697,4 +697,3 @@ void viture_driver_close(void) {
     hid_exit();
     fprintf(stderr, "Viture driver closed.\n");
 }
-

@@ -7,7 +7,7 @@
 #include <time.h>
 #include <sys/ioctl.h>
 #include <sys/mman.h>
-#include <pthread.h> // NEW: For mutex
+#include <pthread.h>
 
 #include <linux/videodev2.h>
 
@@ -57,7 +57,9 @@ static unsigned char *rgb_frames[2] = {NULL, NULL};
 static int front_buffer_idx = 0;                   
 static int back_buffer_idx = 1;                    
 static volatile bool new_frame_captured = false;   
-static pthread_mutex_t frame_mutex;                
+static pthread_mutex_t frame_mutex;
+static pthread_t capture_thread_id = 0; // Initialize to 0
+static volatile bool stop_capture_thread_flag = false;
 
 static bool glut_initialized = false;
 
@@ -392,6 +394,17 @@ void cleanup() {
     if (buffers_mp) { free(buffers_mp); buffers_mp = NULL; }
     if (rgb_frames[0]) { free(rgb_frames[0]); rgb_frames[0] = NULL; }
     if (rgb_frames[1]) { free(rgb_frames[1]); rgb_frames[1] = NULL; }
+    
+    // Signal capture thread to stop and wait for it
+    if (capture_thread_id != 0) {
+        printf("V4L2_GL: Signaling capture thread to stop...\n");
+        stop_capture_thread_flag = true;
+        printf("V4L2_GL: Joining capture thread...\n");
+        pthread_join(capture_thread_id, NULL);
+        capture_thread_id = 0; // Reset after joining
+        printf("V4L2_GL: Capture thread joined.\n");
+    }
+    
     pthread_mutex_destroy(&frame_mutex); 
     if (texture_id != 0) glDeleteTextures(1, &texture_id);
     printf("Cleanup complete.\n");
@@ -517,15 +530,64 @@ void capture_and_update() {
 
 }
 
-#define TARGET_FPS 60
-static clock_t last_frame_time = 0;
+#define TARGET_FPS 60 // This can still be used for display refresh rate
+
+// --- Capture Thread ---
+void *capture_thread_func(void *arg) {
+    (void)arg; // Unused
+    printf("V4L2_GL: Capture thread started.\n");
+    struct timespec ts;
+    ts.tv_sec = 0;
+    // Use the TARGET_FPS define here
+    ts.tv_nsec = (1000000000L / TARGET_FPS) / 2; // Sleep for a short duration if EAGAIN. Use long literal for 1 billion.
+
+    while (!stop_capture_thread_flag) {
+        struct v4l2_buffer buf_check; // For checking DQBUF result
+        memset(&buf_check, 0, sizeof(buf_check));
+        buf_check.type = active_buffer_type;
+        buf_check.memory = V4L2_MEMORY_MMAP;
+        if (active_buffer_type == V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE) {
+            struct v4l2_plane planes_temp[VIDEO_MAX_PLANES];
+            memset(planes_temp, 0, sizeof(planes_temp));
+            buf_check.m.planes = planes_temp;
+            buf_check.length = num_planes_per_buffer;
+        }
+
+        // Non-blocking check if a buffer is ready
+        // We use a temporary buffer struct for ioctl to avoid issues if capture_and_update is slow
+        // and another DQBUF happens before QBUF in capture_and_update.
+        // However, capture_and_update itself does DQBUF.
+        // The main purpose here is to call capture_and_update when data is likely available.
+        // A more robust way might be to use select() or poll() on the fd.
+        // For now, we'll call capture_and_update and let it handle EAGAIN.
+
+        capture_and_update(); // This function now handles its own EAGAIN
+
+        // If capture_and_update returned due to EAGAIN, we can sleep a bit
+        // This check is a bit indirect. A better way would be for capture_and_update to return a status.
+        // For now, we assume if new_frame_captured is false after a call, it might have been EAGAIN.
+        pthread_mutex_lock(&frame_mutex);
+        bool frame_was_newly_captured = new_frame_captured; // Check if capture_and_update set it
+        pthread_mutex_unlock(&frame_mutex);
+
+        if (!frame_was_newly_captured) { // If no new frame was processed (e.g. EAGAIN)
+             nanosleep(&ts, NULL); // Sleep briefly to avoid busy-waiting
+        }
+        // No explicit sleep if a frame was captured, as V4L2 DQBUF/QBUF cycle provides throttling
+    }
+    printf("V4L2_GL: Capture thread stopping.\n");
+    return NULL;
+}
+
+// static clock_t last_redisplay_time = 0; // Moved TARGET_FPS definition earlier
+static clock_t last_redisplay_time = 0;
 void idle()
 {
+    // This function is now only responsible for triggering redisplay
+    // The actual frame capture is handled by capture_thread_func
     clock_t current_time = clock();
-
-    if ( (current_time - last_frame_time) * 1000 / CLOCKS_PER_SEC >= (1000 / TARGET_FPS) ) {
-        last_frame_time = current_time;
-        capture_and_update();
+    if ( (current_time - last_redisplay_time) * 1000 / CLOCKS_PER_SEC >= (1000 / TARGET_FPS) ) {
+        last_redisplay_time = current_time;
         glutPostRedisplay();
     }
 }
@@ -658,6 +720,16 @@ if (use_viture_imu) {
     glutReshapeFunc(reshape);
     glutIdleFunc(idle);
     atexit(cleanup);
+
+    // Create and start the capture thread
+    printf("V4L2_GL: Creating capture thread...\n");
+    if (pthread_create(&capture_thread_id, NULL, capture_thread_func, NULL) != 0) {
+        perror("Failed to create capture thread");
+        // Perform cleanup before exiting if thread creation fails
+        cleanup(); 
+        exit(EXIT_FAILURE);
+    }
+    printf("V4L2_GL: Capture thread created.\n");
 
     printf("\n--- Starting main loop ---\n");
     glutMainLoop();
