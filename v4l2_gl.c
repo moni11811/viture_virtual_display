@@ -4,6 +4,7 @@
 #include <fcntl.h>
 #include <unistd.h>
 #include <errno.h>
+#include <time.h>
 #include <sys/ioctl.h>
 #include <sys/mman.h>
 #include <pthread.h> // NEW: For mutex
@@ -103,7 +104,6 @@ static void app_viture_imu_data_handler(uint8_t *data, uint16_t len, uint32_t ts
     viture_pitch = makeFloat(data + 4);
     viture_yaw = -makeFloat(data + 8);
 
-    if ( glut_initialized ) glutPostRedisplay();
 }
 
 static void app_viture_mcu_event_handler(uint16_t msgid, uint8_t *data, uint16_t len, uint32_t ts)
@@ -515,11 +515,19 @@ void capture_and_update() {
         exit(EXIT_FAILURE);
     }
 
-    glutPostRedisplay(); 
 }
 
-void idle() {
-    capture_and_update();
+#define TARGET_FPS 60
+static clock_t last_frame_time = 0;
+void idle()
+{
+    clock_t current_time = clock();
+
+    if ( (current_time - last_frame_time) * 1000 / CLOCKS_PER_SEC >= (1000 / TARGET_FPS) ) {
+        last_frame_time = current_time;
+        capture_and_update();
+        glutPostRedisplay();
+    }
 }
 
 void init_gl() {
