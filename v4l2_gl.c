@@ -34,7 +34,9 @@
 #define FRAME_HEIGHT     1080 // Requested height
 #define BUFFER_COUNT     4
 
-#define SENSITIVITY_ANGLE 5.0f // Sensitivity for head gesture tracking in degrees
+#define SENSITIVITY_ANGLE 2.0f // Sensitivity for head gesture tracking in degrees
+#define HEAD_SHAKE_RESET_TIME 3000 
+#define HEAD_SHAKE_RESET_COUNT 4 // Number of shakes to reset the yaw angle
 
 // --- Global variables for V4L2 ---
 static enum v4l2_buf_type active_buffer_type;
@@ -91,6 +93,7 @@ static bool initial_offsets_set = false;
 static float average_yaw = 0.0f; // Used for head gesture tracking
 static int skip_initial_imu_frames = 20;
 
+
 static float makeFloat(uint8_t *data) {
     float value = 0;
     uint8_t tem[4];
@@ -102,41 +105,81 @@ static float makeFloat(uint8_t *data) {
     return value;
 }
 
-
 /* Calculates the rolling average of the yaw angle 
    if the user shakes their head quickly 3 times the yaw angle will be reset to have the screen back in front of them.
-   The head shake is detected by subtracting the average yaw angle from the current yaw angle and counting the 0 crossings over a certain time period.
-   For a 0 crossing to be counted the difference must be greater than SENSITIVITY_ANGLE degrees.
-   The head shake is reset after 3 shakes or after 5 seconds of no head movement.
+   The head shake is detected by checking the difference between the average_yaw and the current yaw.
+   If it exceeds SENSITIVITY_ANGLE degrees the shake detection is started.
+   The next head shae is detected by the difference between the starting yaw angle and the current yaw angle, if it exceeds SENSITIVITY_ANGLE degrees
+   the head shake is counted.
+   Subsequent shakes are detected by calculating the difference between the last yaw angle and the current yaw angle, if the difference exceeds SENSITIVITY_ANGLE degrees
+   the head shake is counted.
+
+   The head shake is reset after 3 shakes or after HEAD_SHAKE_RESET_TIME.
 */
 
 static void track_reset_head_gesture(float roll, float pitch, float yaw, uint32_t ts) {
     static float last_yaw = 0.0f;
-    static uint32_t last_reset_time = 0;
+    static int shake_direction = 0; // Direction of the last shake
+    static clock_t last_reset_time = 0;
     static int shake_count = 0;
 
-    if (ts - last_reset_time > 5000) { // Reset after 5 seconds of no movement
+    clock_t current_time = clock() * 1000 / CLOCKS_PER_SEC; // Convert to milliseconds
+
+    yaw += 360.0f; // Ensure yaw is positive for easier calculations
+    if (current_time - last_reset_time > HEAD_SHAKE_RESET_TIME) { 
         shake_count = 0;
-        last_reset_time = ts;
+        shake_direction = 0; // Reset shake direction
+        last_reset_time = current_time;
     }
 
-    float yaw_diff = yaw - average_yaw;
+    if ( shake_count == 0 ) {
+        last_yaw = average_yaw;
+    }
+
+    float yaw_diff = yaw - last_yaw;
 
     if (fabs(yaw_diff) > SENSITIVITY_ANGLE) {
-        if ((yaw_diff > 0 && last_yaw < average_yaw) || (yaw_diff < 0 && last_yaw > average_yaw)) {
-            shake_count++;
-            printf("Head shake detected! Count: %d\n", shake_count);
+        if ( shake_direction == 0 ) {
+            if (yaw_diff > 0) {
+                shake_direction = 1; // Positive direction
+            } else {
+                shake_direction = -1; // Negative direction
+            }
+        } else {
+            bool tmp = false;
+            if (yaw_diff > 0 && shake_direction == 1)
+            {
+                tmp = true;
+                shake_direction = -1;
+                last_yaw = yaw;
+            }
+            else if (yaw_diff < 0 && shake_direction == -1)
+            {
+                tmp = true; 
+                shake_direction = 1; // Reset to positive direction
+                last_yaw = yaw;
+            }
+
+            if (tmp) {
+                shake_count++;
+                printf("Head shake detected! Count: %d average yaw %f, ts: %ld\n", shake_count, average_yaw, current_time);
+            }
         }
-        last_yaw = yaw;
     }
 
-    if (shake_count >= 3) {
+    if (shake_count >= HEAD_SHAKE_RESET_COUNT ) {
         printf("Resetting head gesture tracking. Yaw reset to %f\n", yaw);
         average_yaw = yaw; // Reset the average yaw to the current yaw
         shake_count = 0; // Reset the count
-    } else {
-        average_yaw = (average_yaw * 0.9f) + (yaw * 0.1f); // Update the average with a simple low-pass filter
-    }
+        shake_direction = 0; // Reset the shake direction
+        initial_offsets_set = false; // Reset the initial offsets
+
+        last_reset_time = current_time; // Update the last reset time
+        skip_initial_imu_frames = 30;
+    } 
+    
+    average_yaw = (average_yaw * 0.99f) + (yaw * 0.01f); // Update the average with a simple low-pass filter
+    
 }
 
 
@@ -161,7 +204,7 @@ static void app_viture_imu_data_handler(uint8_t *data, uint16_t len, uint32_t ts
     viture_pitch = makeFloat(data + 4);
     viture_yaw = -makeFloat(data + 8);
 
-    //track_reset_head_gesture(viture_roll - initial_roll_offset, viture_pitch-initial_pitch_offset, viture_yaw-initial_yaw_offset, ts);
+    track_reset_head_gesture(viture_roll, viture_pitch, viture_yaw, ts);
 
 }
 
@@ -415,13 +458,15 @@ void display() {
     glBindTexture(GL_TEXTURE_2D, texture_id);
     if ( generate_texture ) glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, actual_frame_width, actual_frame_height, GL_RGB, GL_UNSIGNED_BYTE, rgb_frames[front_buffer_idx]);
 
-    float aspect_ratio = (float)actual_frame_width / (float)actual_frame_height;
-    glBegin(GL_QUADS);
-        glTexCoord2f(0.0f, 1.0f); glVertex3f(-aspect_ratio, -1.0f, 0.0f);
-        glTexCoord2f(1.0f, 1.0f); glVertex3f( aspect_ratio, -1.0f, 0.0f);
-        glTexCoord2f(1.0f, 0.0f); glVertex3f( aspect_ratio,  1.0f, 0.0f);
-        glTexCoord2f(0.0f, 0.0f); glVertex3f(-aspect_ratio,  1.0f, 0.0f);
-    glEnd();
+    if ( initial_offsets_set) {
+        float aspect_ratio = (float)actual_frame_width / (float)actual_frame_height;
+        glBegin(GL_QUADS);
+            glTexCoord2f(0.0f, 1.0f); glVertex3f(-aspect_ratio, -1.0f, 0.0f);
+            glTexCoord2f(1.0f, 1.0f); glVertex3f( aspect_ratio, -1.0f, 0.0f);
+            glTexCoord2f(1.0f, 0.0f); glVertex3f( aspect_ratio,  1.0f, 0.0f);
+            glTexCoord2f(0.0f, 0.0f); glVertex3f(-aspect_ratio,  1.0f, 0.0f);
+        glEnd();    
+    }
     glutSwapBuffers();
 }
 
@@ -649,7 +694,7 @@ if (use_viture_imu) {
         fprintf(stderr, "V4L2_GL: Failed to initialize custom Viture driver.\n");
         use_viture_imu = false; 
     } else {
-        printf ("V4L2_GL: Custom Viture driver initialized successfully.\n");
+        //printf ("V4L2_GL: Custom Viture driver initialized successfully.\n");
         viture_set_imu_data_callback(app_viture_imu_data_handler); 
         viture_set_mcu_event_callback(app_viture_mcu_event_handler); 
         

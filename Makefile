@@ -26,7 +26,8 @@ OBJS_TEST = $(SRCS_TEST:.c=.o)
 # -g:         Generate debugging information (for gdb)
 # -O2:        Optimization level 2 (for performance)
 # You might use -g for development and -O2 for release.
-CFLAGS = -Wall -Wextra -g -std=c11 -O2
+# -std=c11 causes a segfault in the viture code
+CFLAGS = -Wall -Wextra -g -O2
 
 # Core graphics libraries
 GRAPHICS_LIBS = -lglut -lGL -lGLU -lusb-1.0
