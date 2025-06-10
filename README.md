@@ -125,9 +125,9 @@ This command would:
 
 ## TODO
 
- -[x] Add support for USB HDMI capture cards to support SBCs that don't have HDMI-in like Raspberry PIs
- -[ ] Fix errors in reverse engineered viture SDK
- -[ ] Improve performance of the hdmi texture conversion
- -[ ] Support MJPEG format to increase framerate of USB capture cards
- -[ ] Add quick gesture to recenter the rotation
- -[ ] Add curved screen option
+ - [x] ~~Add support for USB HDMI capture cards to support SBCs that don't have HDMI-in like Raspberry PIs~~
+ - [ ] Fix errors in reverse engineered viture SDK
+ - [ ] Improve performance of the hdmi texture conversion
+ - [ ] Support MJPEG format to increase framerate of USB capture cards
+ - [ ] Add quick gesture to recenter the rotation
+ - [ ] Add curved screen option
