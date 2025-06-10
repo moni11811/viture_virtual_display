@@ -71,7 +71,7 @@ sudo ./v4l2_gl_viture_sdk [options]
 
 ### Recenter view / rotation reset
 
-To reset the rotation to the center position after the IMU has drifted too far quickly shake your head left/right 3 times
+Quickly shake your head left/right 3 times to reset the rotation to the center position after the IMU has drifted too far.
 
 
 ### Command-Line Options
