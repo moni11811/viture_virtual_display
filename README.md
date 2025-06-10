@@ -69,6 +69,11 @@ or
 sudo ./v4l2_gl_viture_sdk [options]
 ```
 
+### Recenter view / rotation reset
+
+To reset the rotation to the center position after the IMU has drifted too far quickly shake your head left/right 3 times
+
+
 ### Command-Line Options
 
 The application supports the following command-line options:
