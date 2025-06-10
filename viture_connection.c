@@ -631,12 +631,18 @@ void viture_set_imu_data_callback(viture_imu_data_callback_t callback) {
 
 // Main Init/Deinit for the driver
 bool viture_driver_init(void) {
+    fprintf(stderr, "Initializing Viture driver...\n");
+
     if (hid_init() != 0) {
         fprintf(stderr, "Failed to initialize HIDAPI.\n");
         return false;
     }
+
+    printf(stderr, "HIDAPI initialized successfully.\n");
+
     init_crc_table();
 
+    printf(stderr, "CRC table initialized.\n");
     // Find HID device paths
     // Free these paths in viture_driver_close
     if (mcu_hid_path) free(mcu_hid_path);

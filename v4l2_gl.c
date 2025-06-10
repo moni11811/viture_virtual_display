@@ -34,6 +34,8 @@
 #define FRAME_HEIGHT     1080 // Requested height
 #define BUFFER_COUNT     4
 
+#define SENSITIVITY_ANGLE 5.0f // Sensitivity for head gesture tracking in degrees
+
 // --- Global variables for V4L2 ---
 static enum v4l2_buf_type active_buffer_type;
 static __u32 active_pixel_format;
@@ -86,6 +88,8 @@ static float initial_roll_offset = 0.0f;
 static float initial_pitch_offset = 0.0f; 
 static float initial_yaw_offset = 0.0f;  
 static bool initial_offsets_set = false; 
+static float average_yaw = 0.0f; // Used for head gesture tracking
+static int skip_initial_imu_frames = 20;
 
 static float makeFloat(uint8_t *data) {
     float value = 0;
@@ -98,11 +102,54 @@ static float makeFloat(uint8_t *data) {
     return value;
 }
 
+
+/* Calculates the rolling average of the yaw angle 
+   if the user shakes their head quickly 3 times the yaw angle will be reset to have the screen back in front of them.
+   The head shake is detected by subtracting the average yaw angle from the current yaw angle and counting the 0 crossings over a certain time period.
+   For a 0 crossing to be counted the difference must be greater than SENSITIVITY_ANGLE degrees.
+   The head shake is reset after 3 shakes or after 5 seconds of no head movement.
+*/
+
+static void track_reset_head_gesture(float roll, float pitch, float yaw, uint32_t ts) {
+    static float last_yaw = 0.0f;
+    static uint32_t last_reset_time = 0;
+    static int shake_count = 0;
+
+    if (ts - last_reset_time > 5000) { // Reset after 5 seconds of no movement
+        shake_count = 0;
+        last_reset_time = ts;
+    }
+
+    float yaw_diff = yaw - average_yaw;
+
+    if (fabs(yaw_diff) > SENSITIVITY_ANGLE) {
+        if ((yaw_diff > 0 && last_yaw < average_yaw) || (yaw_diff < 0 && last_yaw > average_yaw)) {
+            shake_count++;
+            printf("Head shake detected! Count: %d\n", shake_count);
+        }
+        last_yaw = yaw;
+    }
+
+    if (shake_count >= 3) {
+        printf("Resetting head gesture tracking. Yaw reset to %f\n", yaw);
+        average_yaw = yaw; // Reset the average yaw to the current yaw
+        shake_count = 0; // Reset the count
+    } else {
+        average_yaw = (average_yaw * 0.9f) + (yaw * 0.1f); // Update the average with a simple low-pass filter
+    }
+}
+
+
 static void app_viture_imu_data_handler(uint8_t *data, uint16_t len, uint32_t ts) {
     (void)ts; 
     if (len < 12) return;
 
     if (use_viture_imu && !initial_offsets_set) {
+        if (skip_initial_imu_frames > 0) {
+            skip_initial_imu_frames--;
+            return; // Skip the first few frames to allow IMU to stabilize
+        }   
+
         initial_roll_offset = makeFloat(data);
         initial_pitch_offset = makeFloat(data + 4); 
         initial_yaw_offset = -makeFloat(data + 8);
@@ -113,6 +160,8 @@ static void app_viture_imu_data_handler(uint8_t *data, uint16_t len, uint32_t ts
     viture_roll = makeFloat(data);
     viture_pitch = makeFloat(data + 4);
     viture_yaw = -makeFloat(data + 8);
+
+    //track_reset_head_gesture(viture_roll - initial_roll_offset, viture_pitch-initial_pitch_offset, viture_yaw-initial_yaw_offset, ts);
 
 }
 
@@ -600,6 +649,7 @@ if (use_viture_imu) {
         fprintf(stderr, "V4L2_GL: Failed to initialize custom Viture driver.\n");
         use_viture_imu = false; 
     } else {
+        printf ("V4L2_GL: Custom Viture driver initialized successfully.\n");
         viture_set_imu_data_callback(app_viture_imu_data_handler); 
         viture_set_mcu_event_callback(app_viture_mcu_event_handler); 
         
