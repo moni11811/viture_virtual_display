@@ -73,35 +73,44 @@ sudo ./v4l2_gl_viture_sdk [options]
 
 The application supports the following command-line options:
 
--   **`-f`** or **`--fullscreen`**:
+-   **`--device <path>`**:
+    Specifies the V4L2 device path (e.g., /dev/video0).
+    Default: `/dev/video0`.
+    Example: `./v4l2_gl --device /dev/video1`
+
+-   **`--fullscreen`**:
     Runs the application in fullscreen mode.
-    Example: `./v4l2_gl -f`
+    Default: `false` (disabled).
+    Example: `./v4l2_gl --fullscreen`
 
 -   **`--viture`**:
     Enables integration with Viture headset IMU for controlling the rotation of the displayed plane. The Viture SDK and device must be correctly set up.
+    Default: `false` (disabled).
     Example: `./v4l2_gl --viture`
 
--   **`-tp`** or **`--test-pattern`**:
+-   **`--test-pattern`**:
     Displays a generated test pattern on the plane instead of the live camera feed. Useful for testing rendering and transformations.
-    Example: `./v4l2_gl -tp`
+    Default: `false` (disabled).
+    Example: `./v4l2_gl --test-pattern`
 
--   **`-pd <distance>`** or **`--plane-distance <distance>`**:
+-   **`--plane-distance <distance>`**:
     Sets the distance at which the plane orbits the world origin. `<distance>` is a floating-point value.
-    Default: `1.0` (if not specified). A value of `0.0` places the plane at the origin.
-    Example: `./v4l2_gl -pd 0.5` (plane orbits at 0.5 units from the origin)
+    Default: `1.0`.
+    Example: `./v4l2_gl --plane-distance 0.5`
 
--   **`-ps <scale>`** or **`--plane-scale <scale>`**:
-    Sets a scale multiplier for the size of the plane. `<scale>` is a floating-point value.
-    Default: `1.0` (original size). Values greater than 1.0 enlarge the plane, less than 1.0 shrink it. Negative or zero values are reset to 1.0.
-    Example: `./v4l2_gl -ps 1.5` (plane is 50% larger)
+-   **`--plane-scale <scale>`**:
+    Sets a scale multiplier for the size of the plane. `<scale>` is a floating-point value (must be > 0).
+    Default: `1.0` (original size). Values greater than 1.0 enlarge the plane, less than 1.0 shrink it. Values <= 0.0 are reset to 1.0.
+    Example: `./v4l2_gl --plane-scale 1.5`
 
 ### Combined Example
 
 You can combine these options:
 ```bash
-./v4l2_gl --viture -f -pd 0.8 -ps 1.2 -tp
+./v4l2_gl --device /dev/video1 --viture --fullscreen --plane-distance 0.8 --plane-scale 1.2 --test-pattern
 ```
 This command would:
+- Use V4L2 device `/dev/video1`.
 - Enable Viture IMU.
 - Run in fullscreen.
 - Set the plane orbit distance to 0.8 units.

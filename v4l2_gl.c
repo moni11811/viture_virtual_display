@@ -13,6 +13,8 @@
 
 #include <stdbool.h>
 
+#define KGFLAGS_IMPLEMENTATION
+#include "kgflags.h"
 
 // Use GL/glut.h on macOS, GL/freeglut.h on Linux
 #include <GL/freeglut.h> 
@@ -27,7 +29,7 @@
 
 
 // --- V4L2 and Frame Configuration ---
-#define DEVICE_PATH      "/dev/video0"
+// #define DEVICE_PATH      "/dev/video0" // Will be replaced by a command line flag
 #define FRAME_WIDTH      1920 // Requested width
 #define FRAME_HEIGHT     1080 // Requested height
 #define BUFFER_COUNT     4
@@ -66,10 +68,13 @@ static volatile bool stop_capture_thread_flag = false;
 
 static bool glut_initialized = false;
 
-static int fullscreen_mode = 0; 
-static int display_test_pattern = 0;                
+static bool fullscreen_mode = false; 
+static bool display_test_pattern = false;                
 static float g_plane_orbit_distance = 1.0f;         
 static float g_plane_scale = 1.0f;                  
+
+// --- V4L2 Device Path ---
+static const char *v4l2_device_path_str = "/dev/video0"; // Default value
 
 // --- Helper Functions ---
 
@@ -129,8 +134,12 @@ void init_v4l2() {
     struct v4l2_format fmt;
     struct v4l2_requestbuffers req;
     
-    fd = open(DEVICE_PATH, O_RDWR | O_NONBLOCK, 0);
-    if (fd < 0) { perror("Cannot open device"); exit(EXIT_FAILURE); }
+    printf("V4L2: Opening device: %s\n", v4l2_device_path_str);
+    fd = open(v4l2_device_path_str, O_RDWR | O_NONBLOCK, 0);
+    if (fd < 0) { 
+        fprintf(stderr, "Cannot open device %s: %s\n", v4l2_device_path_str, strerror(errno)); 
+        exit(EXIT_FAILURE); 
+    }
 
     if (ioctl(fd, VIDIOC_QUERYCAP, &cap) < 0) { perror("VIDIOC_QUERYCAP"); exit(EXIT_FAILURE); }
 
@@ -539,52 +548,45 @@ void init_gl() {
 }
 
 int main(int argc, char **argv) {
-    for (int i = 1; i < argc; i++) {
-        if (strcmp(argv[i], "-f") == 0 || strcmp(argv[i], "--fullscreen") == 0) {
-            fullscreen_mode = 1;
-            printf("Argument: Fullscreen mode enabled.\n");
-        } else if (strcmp(argv[i], "--viture") == 0) {
-            use_viture_imu = true;
-            printf("Argument: Viture IMU enabled.\n");
-        } else if (strcmp(argv[i], "-tp") == 0 || strcmp(argv[i], "--test-pattern") == 0) {
-            display_test_pattern = 1;
-            printf("Argument: Displaying test pattern.\n");
-        } else if ((strcmp(argv[i], "-pd") == 0 || strcmp(argv[i], "--plane-distance") == 0)) {
-            if (i + 1 < argc) {
-                char *endptr;
-                float val = strtof(argv[i+1], &endptr);
-                if (endptr != argv[i+1] && *endptr == '\0') { 
-                    g_plane_orbit_distance = val;
-                    i++; 
-                    printf("Argument: Plane orbit distance set to %f.\n", g_plane_orbit_distance);
-                } else {
-                    fprintf(stderr, "Error: Invalid float value for %s: %s\n", argv[i], argv[i+1]);
-                }
-            } else {
-                fprintf(stderr, "Error: %s requires a float value.\n", argv[i]);
-            }
-        } else if ((strcmp(argv[i], "-ps") == 0 || strcmp(argv[i], "--plane-scale") == 0)) {
-            if (i + 1 < argc) {
-                char *endptr;
-                float val = strtof(argv[i+1], &endptr);
-                if (endptr != argv[i+1] && *endptr == '\0') { 
-                    g_plane_scale = val;
-                    if (g_plane_scale <= 0.0f) { 
-                        fprintf(stderr, "Warning: Plane scale should be positive. Using 1.0.\n");
-                        g_plane_scale = 1.0f;
-                    }
-                    i++; 
-                    printf("Argument: Plane scale set to %f.\n", g_plane_scale);
-                } else {
-                    fprintf(stderr, "Error: Invalid float value for %s: %s\n", argv[i], argv[i+1]);
-                }
-            } else {
-                fprintf(stderr, "Error: %s requires a float value.\n", argv[i]);
-            }
-        }
+    // --- Argument Parsing with kgflags ---
+    kgflags_string("device", "/dev/video0", "V4L2 device path (e.g., /dev/video0).", false, &v4l2_device_path_str);
+    kgflags_bool("fullscreen", false, "Enable fullscreen mode.", false, &fullscreen_mode);
+    kgflags_bool("viture", false, "Enable Viture IMU.", false, &use_viture_imu);
+    kgflags_bool("test-pattern", false, "Display test pattern instead of V4L2.", false, &display_test_pattern);
+
+    double plane_distance_double = (double)g_plane_orbit_distance;
+    kgflags_double("plane-distance", plane_distance_double, "Set plane orbit distance (float).", false, &plane_distance_double);
+
+    double plane_scale_double = (double)g_plane_scale;
+    kgflags_double("plane-scale", plane_scale_double, "Set plane scale (float, must be > 0).", false, &plane_scale_double);
+
+    kgflags_set_prefix("--"); // Flags will be e.g. --fullscreen
+    kgflags_set_custom_description("Usage: v4l2_gl [FLAGS]\n\nOptions:");
+
+    if (!kgflags_parse(argc, argv)) {
+        kgflags_print_errors();
+        kgflags_print_usage();
+        return 1;
     }
-    
-    printf("Starting V4L2-OpenGL real-time viewer...\n");
+
+    g_plane_orbit_distance = (float)plane_distance_double;
+    g_plane_scale = (float)plane_scale_double;
+
+    // Validate plane_scale after parsing
+    if (g_plane_scale <= 0.0f) {
+        fprintf(stderr, "Warning: Plane scale (--plane-scale) must be positive. Resetting to 1.0.\n");
+        g_plane_scale = 1.0f;
+    }
+
+    printf("Starting V4L2-OpenGL real-time viewer with settings:\n");
+    printf("  Fullscreen: %s\n", fullscreen_mode ? "enabled" : "disabled");
+    printf("  Viture IMU: %s\n", use_viture_imu ? "enabled" : "disabled");
+    printf("  Test Pattern: %s\n", display_test_pattern ? "enabled" : "disabled");
+    printf("  V4L2 Device: %s\n", v4l2_device_path_str);
+    printf("  Plane Orbit Distance: %f\n", g_plane_orbit_distance);
+    printf("  Plane Scale: %f\n", g_plane_scale);
+    printf("\n");
+
 
 if (use_viture_imu) {
 #ifdef USE_VITURE
