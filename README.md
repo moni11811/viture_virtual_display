@@ -16,7 +16,7 @@ To run this as intended you need an OrangePi 5 Plus with armbian ( we are using 
 
 If you are using a Raspberry Pi or other device without HDMI-in you need a USB capture card that is supported on your Linux version
 
-![Supported platforms](https://github.com/mgschwan/viture_virtual_display/blob/main/assets/supported_platforms.jpg?raw=true)
+![Supported platforms](https://github.com/mgschwan/viture_virtual_display/blob/main/assets/supported_platform.jpg?raw=true)
 
 
 ### Testing without HDMI
