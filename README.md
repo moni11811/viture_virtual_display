@@ -5,13 +5,23 @@
 v4l2_gl captures video from a HDMI-in on an OrangePI 5 Plus using the hdmirx V4L2 device, converts frames to RGB, and displays them in real-time on a textured quad in an OpenGL window. It supports Viture headset IMU integration, test patterns, and plane geometry.
 
 ![Diagram of virtual display](https://github.com/mgschwan/viture_virtual_display/blob/main/assets/virtual_display.png?raw=true)
-## Prerequisites
+
+## Supported platforms
+
+### Orange Pi 5 Plus
 
 To run this as intended you need an OrangePi 5 Plus with armbian ( we are using BredOS ) that has Device Tree Overlays enabled and has the hdmi-rx device tree overlay active.
 
-For testing purposes you can run it on a laptop with a webcam but that does not provide you with a virtual display.
+### Other SBCs
 
-In the future we will add support for other SBCs like the Raspberry Pi through USB HDMI capture cards
+If you are using a Raspberry Pi or other device without HDMI-in you need a USB capture card that is supported on your Linux version
+
+![Supported platforms](https://github.com/mgschwan/viture_virtual_display/blob/main/assets/supported_platforms.jpg?raw=true)
+
+
+### Testing without HDMI
+
+For testing purposes you can run it on a laptop with a webcam but that does not provide you with a virtual display.
 
 ## Dependencies
 
@@ -27,7 +37,6 @@ To compile and run this application, ensure the following libraries are installe
     ```
 
 -   **libv4l2 library**:
-    This library is required for interacting with V4L2 devices. On Debian/Ubuntu-based systems, install it with:
     ```
     sudo apt install libv4l-dev
     ```
@@ -127,6 +136,10 @@ This command would:
 
 [![Video demo](https://img.youtube.com/vi/D6w5kAA22Ts/0.jpg)](https://youtu.be/D6w5kAA22Ts)
 
+### Reset rotation gesture
+
+[![Video demo](https://img.youtube.com/vi/yIymNF4RbDQ/0.jpg)](https://youtu.be/yIymNF4RbDQ)
+
 
 ## TODO
 
@@ -134,5 +147,5 @@ This command would:
  - [ ] Fix errors in reverse engineered viture SDK
  - [ ] Improve performance of the hdmi texture conversion
  - [ ] Support MJPEG format to increase framerate of USB capture cards
- - [ ] Add quick gesture to recenter the rotation
+ - [x] Add quick gesture to recenter the rotation
  - [ ] Add curved screen option
