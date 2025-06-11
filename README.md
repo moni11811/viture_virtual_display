@@ -1,6 +1,6 @@
 # V4L2 Viture Virtual Display
 
-**Attention** this is *still in early development* and not fully functional yet. It will work but performance needs to be improved a lot. 
+**Attention** this is **still in early development** and not fully functional yet. It will work but performance needs to be improved a lot. 
 
 v4l2_gl captures video from a HDMI-in on an OrangePI 5 Plus using the hdmirx V4L2 device, converts frames to RGB, and displays them in real-time on a textured quad in an OpenGL window. It supports Viture headset IMU integration, test patterns, and plane geometry.
 
