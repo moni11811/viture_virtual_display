@@ -12,7 +12,7 @@ TARGET_TEST = test_viture
 TARGET_TEST_CONVERSIONS = test_conversions
 
 # Source files (add more .c files here if your project grows)
-SRCS = v4l2_gl.c viture_connection.c utility.c
+SRCS = v4l2_gl.c viture_connection.c utility.c xdg_source.c
 SRCS_TEST = test_viture.c viture_connection.c utility.c
 SRC_TEST_CONVERSIONS = test_conversions.c utility.c
 
@@ -27,7 +27,8 @@ OBJS_TEST = $(SRCS_TEST:.c=.o)
 # -O2:        Optimization level 2 (for performance)
 # You might use -g for development and -O2 for release.
 # -std=c11 causes a segfault in the viture code
-CFLAGS = -Wall -Wextra -g -O2
+GLIB_CFLAGS = $(shell pkg-config --cflags glib-2.0 gio-2.0 gdk-pixbuf-2.0)
+CFLAGS = -Wall -Wextra -g -O2 $(GLIB_CFLAGS)
 
 # Core graphics libraries
 GRAPHICS_LIBS = -lglut -lGL -lGLU -lusb-1.0
@@ -40,8 +41,9 @@ PTHREAD_LIB = -lpthread
 # For test_viture, we only need viture_connection.o, which itself doesn't use VITURE_LIB.
 VITURE_LIB = 3rdparty/lib/libviture_one_sdk_static.a
 
-LIBS = $(LDFLAGS) $(GRAPHICS_LIBS) $(HIDAPI_LIB) $(PTHREAD_LIB)
-LIBS_TEST = $(LDFLAGS) $(HIDAPI_LIB) $(PTHREAD_LIB)
+GLIB_LIBS = $(shell pkg-config --libs glib-2.0 gio-2.0 gdk-pixbuf-2.0)
+LIBS = $(LDFLAGS) $(GRAPHICS_LIBS) $(HIDAPI_LIB) $(PTHREAD_LIB) $(GLIB_LIBS)
+LIBS_TEST = $(LDFLAGS) $(HIDAPI_LIB) $(PTHREAD_LIB) $(GLIB_LIBS)
 LIBS_TEST_CONVERSIONS = $(LDFLAGS)
 
 # Standard command for removing files
@@ -63,9 +65,9 @@ test_conversions: $(TARGET_TEST_CONVERSIONS)
 
 # Rule to link the object files into the final executable.
 # The executable depends on all the object files.
-$(TARGET): $(filter v4l2_gl.o viture_connection.o utility.o, $(OBJS))
+$(TARGET): $(OBJS)
 	@echo "==> Linking $(TARGET)..."
-	$(CC) -o $(TARGET) $(filter v4l2_gl.o viture_connection.o utility.o, $(OBJS)) $(LIBS)
+	$(CC) -o $(TARGET) $(OBJS) $(LIBS)
 	@echo "==> Build complete: ./"$(TARGET)
 
 $(TARGET_VITURE_SDK): v4l2_gl_viture_sdk.o utility.o

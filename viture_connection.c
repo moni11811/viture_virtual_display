@@ -12,6 +12,7 @@
     IMU is used for receiving the IMU data
 */
 
+#define _GNU_SOURCE // For strdup and other POSIX extensions
 #define _POSIX_C_SOURCE 200112L
 
 #include <stdio.h>
@@ -638,11 +639,11 @@ bool viture_driver_init(void) {
         return false;
     }
 
-    printf(stderr, "HIDAPI initialized successfully.\n");
+    fprintf(stderr, "HIDAPI initialized successfully.\n");
 
     init_crc_table();
 
-    printf(stderr, "CRC table initialized.\n");
+    fprintf(stderr, "CRC table initialized.\n");
     // Find HID device paths
     // Free these paths in viture_driver_close
     if (mcu_hid_path) free(mcu_hid_path);

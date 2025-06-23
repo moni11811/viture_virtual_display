@@ -26,6 +26,15 @@
 #endif
 
 #include "utility.h"
+#include "xdg_source.h" // For XDG screen capture
+
+
+// --- Capture Mode ---
+enum CaptureMode {
+    MODE_V4L2,
+    MODE_XDG
+};
+static enum CaptureMode current_capture_mode = MODE_V4L2;
 
 
 // --- V4L2 and Frame Configuration ---
@@ -69,6 +78,13 @@ static volatile bool new_frame_captured = false;
 static pthread_mutex_t frame_mutex;
 static pthread_t capture_thread_id = 0; // Initialize to 0
 static volatile bool stop_capture_thread_flag = false;
+
+// For XDG mode
+static int xdg_prev_frame_width = 0;  // Renamed for clarity
+static int xdg_prev_frame_height = 0; // Renamed for clarity
+static bool texture_needs_respecification = false;
+static size_t current_rgb_buffer_size = 0;
+
 
 static bool glut_initialized = false;
 
@@ -407,16 +423,22 @@ void cleanup() {
     if (rgb_frames[0]) { free(rgb_frames[0]); rgb_frames[0] = NULL; }
     if (rgb_frames[1]) { free(rgb_frames[1]); rgb_frames[1] = NULL; }
     
-    // Signal capture thread to stop and wait for it
-    if (capture_thread_id != 0) {
-        printf("V4L2_GL: Signaling capture thread to stop...\n");
+    // Signal capture thread to stop and wait for it (only if it was started for V4L2)
+    if (current_capture_mode == MODE_V4L2 && capture_thread_id != 0) {
+        printf("V4L2_GL: Signaling V4L2 capture thread to stop...\n");
         stop_capture_thread_flag = true;
-        printf("V4L2_GL: Joining capture thread...\n");
+        printf("V4L2_GL: Joining V4L2 capture thread...\n");
         pthread_join(capture_thread_id, NULL);
         capture_thread_id = 0; // Reset after joining
-        printf("V4L2_GL: Capture thread joined.\n");
+        printf("V4L2_GL: V4L2 capture thread joined.\n");
     }
     
+    // last_xdg_frame_info is not used globally anymore.
+    // if (last_xdg_frame_info) { 
+    //     free_xdg_frame_request(last_xdg_frame_info);
+    //     last_xdg_frame_info = NULL;
+    // }
+
     pthread_mutex_destroy(&frame_mutex); 
     if (texture_id != 0) glDeleteTextures(1, &texture_id);
     printf("Cleanup complete.\n");
@@ -456,9 +478,21 @@ void display() {
     pthread_mutex_unlock(&frame_mutex);
 
     glBindTexture(GL_TEXTURE_2D, texture_id);
-    if ( generate_texture ) glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, actual_frame_width, actual_frame_height, GL_RGB, GL_UNSIGNED_BYTE, rgb_frames[front_buffer_idx]);
 
-    if ( initial_offsets_set) {
+    if (texture_needs_respecification && glut_initialized) { // Ensure GL context is active
+        printf("V4L2_GL: Re-specifying texture to %dx%d\n", actual_frame_width, actual_frame_height);
+        // Update texture storage with new dimensions
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, actual_frame_width, actual_frame_height, 0,
+                     GL_RGB, GL_UNSIGNED_BYTE, NULL); // Data can be NULL if immediately followed by glTexSubImage2D
+        texture_needs_respecification = false;
+        generate_texture = true; // Force update with new data even if new_frame_captured was false before this
+    }
+
+    if ( generate_texture ) {
+        glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, actual_frame_width, actual_frame_height, GL_RGB, GL_UNSIGNED_BYTE, rgb_frames[front_buffer_idx]);
+    }
+
+    if ( initial_offsets_set || current_capture_mode == MODE_XDG) { // Draw quad if IMU is set or in XDG mode
         float aspect_ratio = (float)actual_frame_width / (float)actual_frame_height;
         glBegin(GL_QUADS);
             glTexCoord2f(0.0f, 1.0f); glVertex3f(-aspect_ratio, -1.0f, 0.0f);
@@ -598,7 +632,61 @@ static clock_t last_redisplay_time = 0;
 void idle()
 {
     // This function is now only responsible for triggering redisplay
-    // The actual frame capture is handled by capture_thread_func
+    // The actual frame capture is handled by capture_thread_func for V4L2
+    // For XDG, we might capture here or in display() before drawing.
+    // Let's try capturing XDG frames here to decouple from display's GL context needs.
+
+    if (current_capture_mode == MODE_XDG) {
+        XDGFrameRequest *xdg_frame = get_xdg_root_window_frame_sync();
+        if (xdg_frame && xdg_frame->success && xdg_frame->data) {
+            if (xdg_frame->width != xdg_prev_frame_width || xdg_frame->height != xdg_prev_frame_height) {
+                printf("V4L2_GL: XDG frame dimensions changed to %dx%d (from %dx%d)\n", 
+                       xdg_frame->width, xdg_frame->height, xdg_prev_frame_width, xdg_prev_frame_height);
+                actual_frame_width = xdg_frame->width;
+                actual_frame_height = xdg_frame->height;
+                xdg_prev_frame_width = actual_frame_width;
+                xdg_prev_frame_height = actual_frame_height;
+                texture_needs_respecification = true;
+
+                // Reallocate rgb_frames if necessary
+                size_t new_size = (size_t)actual_frame_width * actual_frame_height * 3;
+                if (new_size > current_rgb_buffer_size || !rgb_frames[0] || !rgb_frames[1]) {
+                    printf("V4L2_GL: Reallocating RGB buffers to %zu bytes for %dx%d\n", new_size, actual_frame_width, actual_frame_height);
+                    free(rgb_frames[0]);
+                    free(rgb_frames[1]);
+                    rgb_frames[0] = malloc(new_size);
+                    rgb_frames[1] = malloc(new_size);
+                    if (!rgb_frames[0] || !rgb_frames[1]) {
+                        fprintf(stderr, "FATAL: Failed to reallocate RGB frames for XDG mode!\n");
+                        // Consider how to handle this - maybe exit or stop trying XDG.
+                        // For now, we might crash if memcpy proceeds.
+                        // Let's prevent memcpy if allocation failed.
+                        if (xdg_frame) free_xdg_frame_request(xdg_frame);
+                        // Skip frame processing this cycle
+                        goto skip_xdg_frame_processing; 
+                    }
+                    memset(rgb_frames[0], 0, new_size); // Clear new buffers
+                    memset(rgb_frames[1], 0, new_size);
+                    current_rgb_buffer_size = new_size;
+                }
+            }
+
+            if (rgb_frames[back_buffer_idx]) { // Check if buffer is allocated
+                 memcpy(rgb_frames[back_buffer_idx], xdg_frame->data, (size_t)actual_frame_width * actual_frame_height * 3);
+                 pthread_mutex_lock(&frame_mutex);
+                 new_frame_captured = true;
+                 pthread_mutex_unlock(&frame_mutex);
+            } else {
+                 fprintf(stderr, "V4L2_GL: rgb_frames not allocated, cannot copy XDG frame.\n");
+            }
+            free_xdg_frame_request(xdg_frame);
+        } else {
+            if (xdg_frame) free_xdg_frame_request(xdg_frame);
+            // fprintf(stderr, "V4L2_GL: Failed to get XDG frame in idle().\n");
+        }
+    }
+
+skip_xdg_frame_processing:; // Label for goto
     clock_t current_time = clock();
     if ( (current_time - last_redisplay_time) * 1000 / CLOCKS_PER_SEC >= (1000 / TARGET_FPS) ) {
         last_redisplay_time = current_time;
@@ -612,17 +700,24 @@ void init_gl() {
         exit(EXIT_FAILURE);
     }
 
-    // Allocate RGB frames based on actual dimensions AFTER V4L2 init
-    // This means init_gl() should be called after init_v4l2()
-    rgb_frames[0] = malloc(actual_frame_width * actual_frame_height * 3);
-    rgb_frames[1] = malloc(actual_frame_width * actual_frame_height * 3);
+    // Allocate RGB frames based on actual dimensions.
+    // actual_frame_width/height are set by init_v4l2() or by initial XDG frame check.
+    current_rgb_buffer_size = (size_t)actual_frame_width * actual_frame_height * 3;
+    if (current_rgb_buffer_size == 0) { // Safety if dimensions were somehow zero
+        fprintf(stderr, "Warning: Frame dimensions are zero in init_gl. Defaulting to 1x1.\n");
+        actual_frame_width = 1; actual_frame_height = 1;
+        current_rgb_buffer_size = 3;
+    }
+
+    rgb_frames[0] = malloc(current_rgb_buffer_size);
+    rgb_frames[1] = malloc(current_rgb_buffer_size);
 
     if (!rgb_frames[0] || !rgb_frames[1]) {
-        fprintf(stderr, "Failed to allocate memory for RGB frames\n");
+        fprintf(stderr, "Failed to allocate memory for RGB frames (%dx%d)\n", actual_frame_width, actual_frame_height);
         exit(EXIT_FAILURE);
     }
-    memset(rgb_frames[0], 0, actual_frame_width * actual_frame_height * 3);
-    memset(rgb_frames[1], 0, actual_frame_width * actual_frame_height * 3);
+    memset(rgb_frames[0], 0, current_rgb_buffer_size);
+    memset(rgb_frames[1], 0, current_rgb_buffer_size);
 
     glEnable(GL_DEPTH_TEST);
     glEnable(GL_TEXTURE_2D);
@@ -647,6 +742,8 @@ int main(int argc, char **argv) {
     kgflags_bool("fullscreen", false, "Enable fullscreen mode.", false, &fullscreen_mode);
     kgflags_bool("viture", false, "Enable Viture IMU.", false, &use_viture_imu);
     kgflags_bool("test-pattern", false, "Display test pattern instead of V4L2.", false, &display_test_pattern);
+    bool use_xdg_mode = false;
+    kgflags_bool("xdg", false, "Use XDG portal for screen capture instead of V4L2.", false, &use_xdg_mode);
 
     double plane_distance_double = (double)g_plane_orbit_distance;
     kgflags_double("plane-distance", plane_distance_double, "Set plane orbit distance (float).", false, &plane_distance_double);
@@ -677,9 +774,18 @@ int main(int argc, char **argv) {
     printf("  Viture IMU: %s\n", use_viture_imu ? "enabled" : "disabled");
     printf("  Test Pattern: %s\n", display_test_pattern ? "enabled" : "disabled");
     printf("  V4L2 Device: %s\n", v4l2_device_path_str);
+    printf("  XDG Mode: %s\n", use_xdg_mode ? "enabled" : "disabled");
     printf("  Plane Orbit Distance: %f\n", g_plane_orbit_distance);
     printf("  Plane Scale: %f\n", g_plane_scale);
     printf("\n");
+
+    if (use_xdg_mode) {
+        current_capture_mode = MODE_XDG;
+        printf("V4L2_GL: XDG screen capture mode selected.\n");
+    } else {
+        current_capture_mode = MODE_V4L2;
+        printf("V4L2_GL: V4L2 capture mode selected.\n");
+    }
 
 
 if (use_viture_imu) {
@@ -721,7 +827,32 @@ if (use_viture_imu) {
         glutCreateWindow("V4L2 Real-time Display");
     }
     
-    init_v4l2(); 
+    if (current_capture_mode == MODE_V4L2) {
+        init_v4l2(); 
+    } else { // MODE_XDG
+        // For XDG, we need to get initial dimensions.
+        // actual_frame_width/height will be updated by the first successful XDG frame.
+        // init_gl will use these. If first XDG frame fails, it might use defaults.
+        printf("V4L2_GL: Attempting to get initial XDG frame for dimensions...\n");
+        XDGFrameRequest *initial_frame = get_xdg_root_window_frame_sync();
+        if (initial_frame && initial_frame->success && initial_frame->data) {
+            actual_frame_width = initial_frame->width;
+            actual_frame_height = initial_frame->height;
+            printf("V4L2_GL: Initial XDG frame: %dx%d\n", actual_frame_width, actual_frame_height);
+            // We don't need to keep this frame's data yet, just dimensions.
+            // Or we could use it as the first frame. For now, just dimensions.
+            xdg_prev_frame_width = actual_frame_width; // Store for later comparison
+            xdg_prev_frame_height = actual_frame_height;
+            texture_needs_respecification = true; // Ensure texture is set up for these dimensions
+        } else {
+            fprintf(stderr, "V4L2_GL: Failed to get initial XDG frame. Using default %dx%d.\n", FRAME_WIDTH, FRAME_HEIGHT);
+            actual_frame_width = FRAME_WIDTH; // Fallback
+            actual_frame_height = FRAME_HEIGHT;
+            // Consider exiting if XDG mode is critical and fails here.
+        }
+        if (initial_frame) free_xdg_frame_request(initial_frame);
+    }
+
     init_gl();   
 
     glutDisplayFunc(display);
@@ -729,15 +860,18 @@ if (use_viture_imu) {
     glutIdleFunc(idle);
     atexit(cleanup);
 
-    // Create and start the capture thread
-    printf("V4L2_GL: Creating capture thread...\n");
-    if (pthread_create(&capture_thread_id, NULL, capture_thread_func, NULL) != 0) {
-        perror("Failed to create capture thread");
-        // Perform cleanup before exiting if thread creation fails
-        cleanup(); 
-        exit(EXIT_FAILURE);
+    // Create and start the capture thread only for V4L2 mode
+    if (current_capture_mode == MODE_V4L2) {
+        printf("V4L2_GL: Creating V4L2 capture thread...\n");
+        if (pthread_create(&capture_thread_id, NULL, capture_thread_func, NULL) != 0) {
+            perror("Failed to create V4L2 capture thread");
+            cleanup(); 
+            exit(EXIT_FAILURE);
+        }
+        printf("V4L2_GL: V4L2 capture thread created.\n");
+    } else {
+        printf("V4L2_GL: XDG mode, no separate capture thread needed.\n");
     }
-    printf("V4L2_GL: Capture thread created.\n");
 
     printf("\n--- Starting main loop ---\n");
     glutMainLoop();
