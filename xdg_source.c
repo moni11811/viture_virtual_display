@@ -69,6 +69,7 @@ struct XDGFrameRequest {
 // Forward declarations
 void free_xdg_frame_request(XDGFrameRequest* frame_req);
 static void on_screencast_start_completed(GObject *source_object, GAsyncResult *res, gpointer user_data);
+static void on_open_pipewire_remote_completed(GObject *source_object, GAsyncResult *res, gpointer user_data);
 
 // Global screencast session state
 static XDGFrameRequest *g_screencast_session = NULL;
@@ -354,12 +355,14 @@ on_start_response_signal(GDBusProxy *proxy,
         return;
     }
 
-
     g_variant_get(parameters, "(u@a{sv})", &response_code, &results_dict);
+
+    g_print( "Value: %s", g_variant_print(parameters, TRUE));
 
     if (response_code == 0) { // Success
         GVariantIter iter;
         GVariant *streams_variant;
+        
         
         g_print("Start Response contents:\n");
         g_variant_iter_init(&iter, results_dict);
@@ -367,34 +370,53 @@ on_start_response_signal(GDBusProxy *proxy,
         GVariant *value;
         while (g_variant_iter_next(&iter, "{&sv}", &key, &value)) {
             g_print("  Key: %s, Type: %s\n", key, g_variant_get_type_string(value));
+            g_print("  Value: %s\n", g_variant_print(value, TRUE));
             g_variant_unref(value);
         }
 
-        if (g_variant_lookup(results_dict, "streams", "a(ua{sv})", &streams_variant)) {
+        streams_variant = g_variant_lookup_value(results_dict, "streams", G_VARIANT_TYPE("a(ua{sv})"));
+        if (streams_variant) {
             GVariantIter stream_iter;
             guint32 node_id;
             GVariant *stream_properties;
-            
+
+            g_print("Streams: %s\n", g_variant_print(streams_variant, TRUE));
+
             g_variant_iter_init(&stream_iter, streams_variant);
             if (g_variant_iter_next(&stream_iter, "(ua{sv})", &node_id, &stream_properties)) {
                 frame_request->stream_node_id = g_strdup_printf("%u", node_id);
                 g_print("ScreenCast stream started with node ID: %s\n", frame_request->stream_node_id);
                 
-                GVariant *pipewire_fd_variant = NULL;
-                if (g_variant_lookup(stream_properties, "pipewire_fd", "h", &pipewire_fd_variant)) {
-                    frame_request->pipewire_fd = g_variant_get_handle(pipewire_fd_variant);
-                    g_print("Got PipeWire file descriptor: %d\n", frame_request->pipewire_fd);
-                } else {
-                    g_printerr("No PipeWire file descriptor found in stream properties\n");
-                }
-                
+
                 frame_request->stream_started = TRUE;
+                g_variant_unref(stream_properties);
+
+                // Now open the pipewire remote
+                GDBusProxy *screencast_proxy = g_dbus_proxy_new_for_bus_sync(
+                    G_BUS_TYPE_SESSION,
+                    G_DBUS_PROXY_FLAGS_NONE,
+                    NULL,
+                    "org.freedesktop.portal.Desktop",
+                    "/org/freedesktop/portal/desktop",
+                    "org.freedesktop.portal.ScreenCast",
+                    NULL,
+                    NULL);
                 
-                process_pipewire_stream(frame_request);
+                if (screencast_proxy) {
+                    g_dbus_proxy_call(screencast_proxy,
+                                      "OpenPipeWireRemote",
+                                      g_variant_new("(oa{sv})", frame_request->session_handle, NULL),
+                                      G_DBUS_CALL_FLAGS_NONE,
+                                      -1,
+                                      NULL,
+                                      on_open_pipewire_remote_completed,
+                                      frame_request);
+                    g_object_unref(screencast_proxy);
+                }
             }
             g_variant_unref(streams_variant);
         } else {
-             g_printerr("No 'streams' key found in Start response\n");
+             g_printerr("No 'streams' key found in Start response or type mismatch\n");
              goto fail_response;
         }
     } else {
@@ -416,6 +438,50 @@ fail_response:
     frame_request->completed = TRUE;
     frame_request->success = FALSE;
     if (frame_request->loop_for_sync_call) g_main_loop_quit(frame_request->loop_for_sync_call);
+}
+
+// Callback for OpenPipeWireRemote method completion
+static void
+on_open_pipewire_remote_completed(GObject *source_object,
+                                  GAsyncResult *res,
+                                  gpointer user_data)
+{
+    GDBusProxy *proxy = G_DBUS_PROXY(source_object);
+    XDGFrameRequest *frame_request = (XDGFrameRequest *)user_data;
+    GVariant *result_tuple;
+    GError *error = NULL;
+
+    result_tuple = g_dbus_proxy_call_finish(proxy, res, &error);
+
+    if (error != NULL) {
+        g_printerr("Error calling OpenPipeWireRemote: %s\n", error->message);
+        g_error_free(error);
+        goto fail;
+    }
+
+    if (result_tuple) {
+        g_print("OpenPipeWireRemote result: %s\n", g_variant_print(result_tuple, TRUE));
+        GVariant *tmp;
+        tmp = g_variant_get_child_value(result_tuple, 0);
+        frame_request->pipewire_fd = g_variant_get_handle(tmp);
+        //g_variant_get(result_tuple, "(h)", &frame_request->pipewire_fd);
+        g_print("Got PipeWire file descriptor: %d\n", frame_request->pipewire_fd);
+        g_variant_unref(result_tuple);
+        
+        process_pipewire_stream(frame_request);
+    } else {
+        g_printerr("Failed to get file descriptor from OpenPipeWireRemote\n");
+        goto fail;
+    }
+
+    return;
+
+fail:
+    frame_request->completed = TRUE;
+    frame_request->success = FALSE;
+    if (frame_request->loop_for_sync_call && g_main_loop_is_running(frame_request->loop_for_sync_call)) {
+        g_main_loop_quit(frame_request->loop_for_sync_call);
+    }
 }
 
 // Callback for the Response signal from the SelectSources request
@@ -473,6 +539,7 @@ on_select_sources_response_signal(GDBusProxy *proxy,
         if (frame_request->loop_for_sync_call) g_main_loop_quit(frame_request->loop_for_sync_call);
     }
 
+    g_variant_unref(results_dict);
     g_signal_handlers_disconnect_by_data(proxy, user_data);
     g_object_unref(proxy);
     frame_request->portal_request_proxy = NULL;
@@ -635,6 +702,7 @@ on_create_session_response_signal(GDBusProxy *proxy,
         Parameters: (uint32 0, {'session_handle': <'/org/freedesktop/portal/desktop/session/1_6307/viture_screencast_1376226928'>})
     */
 
+    g_print( "Value: %s", g_variant_print(parameters, TRUE));
     g_variant_get(parameters, "(ua{sv})", &response_code, &result_tuple);
 
     results_dict = g_variant_get_child_value(parameters, 1);
