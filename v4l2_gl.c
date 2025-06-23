@@ -433,11 +433,11 @@ void cleanup() {
         printf("V4L2_GL: V4L2 capture thread joined.\n");
     }
     
-    // last_xdg_frame_info is not used globally anymore.
-    // if (last_xdg_frame_info) { 
-    //     free_xdg_frame_request(last_xdg_frame_info);
-    //     last_xdg_frame_info = NULL;
-    // }
+    // Clean up XDG screencast session if it was used
+    if (current_capture_mode == MODE_XDG) {
+        printf("V4L2_GL: Cleaning up XDG screencast session...\n");
+        cleanup_screencast_session();
+    }
 
     pthread_mutex_destroy(&frame_mutex); 
     if (texture_id != 0) glDeleteTextures(1, &texture_id);
