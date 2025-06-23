@@ -12,8 +12,39 @@
 #include <sys/mman.h>
 #include <fcntl.h>
 
+// PipeWire includes
+#include <pipewire/pipewire.h>
+#include <spa/param/video/format-utils.h>
+#include <spa/param/video/type-info.h>
+#include <spa/debug/types.h>
+#include <spa/pod/builder.h>
+#include <spa/utils/result.h>
+
+// Forward declaration
+typedef struct XDGFrameRequest XDGFrameRequest;
+typedef struct PipeWireStreamData PipeWireStreamData;
+
+// PipeWire stream data structure
+struct PipeWireStreamData {
+    struct pw_main_loop *loop;
+    struct pw_context *context;
+    struct pw_core *core;
+    struct pw_stream *stream;
+    struct spa_hook stream_listener;
+    
+    unsigned char *frame_data;
+    int frame_width;
+    int frame_height;
+    int frame_stride;
+    gboolean frame_ready;
+    GMutex frame_mutex;
+    GThread *pipewire_thread;
+    
+    XDGFrameRequest *parent_request;
+};
+
 // Define a structure to hold the frame data and sync primitives
-typedef struct {
+struct XDGFrameRequest {
     unsigned char *data;
     int width;
     int height;
@@ -30,14 +61,113 @@ typedef struct {
     gboolean session_created;
     gboolean sources_selected;
     gboolean stream_started;
-} XDGFrameRequest;
+    
+    // PipeWire stream data
+    PipeWireStreamData *pw_data;
+};
 
 // Forward declarations
 void free_xdg_frame_request(XDGFrameRequest* frame_req);
+static void on_screencast_start_completed(GObject *source_object, GAsyncResult *res, gpointer user_data);
 
 // Global screencast session state
 static XDGFrameRequest *g_screencast_session = NULL;
 static gboolean g_screencast_initialized = FALSE;
+
+// PipeWire stream event handlers
+static void on_stream_process(void *userdata)
+{
+    PipeWireStreamData *pw_data = userdata;
+    struct pw_buffer *b;
+    struct spa_buffer *buf;
+    struct spa_data *d;
+    
+    if ((b = pw_stream_dequeue_buffer(pw_data->stream)) == NULL) {
+        g_printerr("Out of buffers: %m\n");
+        return;
+    }
+
+    buf = b->buffer;
+    d = &buf->datas[0];
+    
+    if (d->data == NULL) {
+        g_printerr("No buffer data\n");
+        pw_stream_queue_buffer(pw_data->stream, b);
+        return;
+    }
+
+    g_mutex_lock(&pw_data->frame_mutex);
+
+    // Get frame dimensions from buffer metadata
+    struct spa_meta_header *h = spa_buffer_find_meta_data(buf, SPA_META_Header, sizeof(*h));
+    if (h) {
+        // For now, we'll get dimensions from the buffer size
+        // In a real implementation, we'd parse the video format properly
+        pw_data->frame_width = 1920; // Default, should be parsed from format
+        pw_data->frame_height = 1080; // Default, should be parsed from format
+    }
+
+    // For now, assume common screen resolution if metadata is not available
+    if (pw_data->frame_width <= 0 || pw_data->frame_height <= 0) {
+        pw_data->frame_width = 1920;
+        pw_data->frame_height = 1080;
+    }
+
+    pw_data->frame_stride = pw_data->frame_width * 4; // Assume BGRA format
+    
+    // Allocate frame buffer if needed
+    size_t frame_size = pw_data->frame_height * pw_data->frame_width * 3; // RGB output
+    if (!pw_data->frame_data) {
+        pw_data->frame_data = g_malloc(frame_size);
+    }
+
+    // Convert from BGRA to RGB
+    uint8_t *src = (uint8_t *)d->data;
+    uint8_t *dst = pw_data->frame_data;
+    
+    for (int y = 0; y < pw_data->frame_height; y++) {
+        for (int x = 0; x < pw_data->frame_width; x++) {
+            int src_offset = (y * pw_data->frame_stride) + (x * 4);
+            int dst_offset = (y * pw_data->frame_width * 3) + (x * 3);
+            
+            // Convert BGRA to RGB
+            dst[dst_offset + 0] = src[src_offset + 2]; // R
+            dst[dst_offset + 1] = src[src_offset + 1]; // G
+            dst[dst_offset + 2] = src[src_offset + 0]; // B
+            // Skip alpha channel
+        }
+    }
+
+    pw_data->frame_ready = TRUE;
+    g_mutex_unlock(&pw_data->frame_mutex);
+    // g_print("PipeWire frame processed: %dx%d\n", pw_data->frame_width, pw_data->frame_height);
+
+    pw_stream_queue_buffer(pw_data->stream, b);
+}
+
+static void on_stream_state_changed(void *userdata, enum pw_stream_state old, enum pw_stream_state state, const char *error)
+{
+    (void)userdata;
+    g_print("PipeWire stream state changed: %s -> %s\n", pw_stream_state_as_string(old), pw_stream_state_as_string(state));
+    
+    if (state == PW_STREAM_STATE_ERROR) {
+        g_printerr("PipeWire stream error: %s\n", error);
+    }
+}
+
+static const struct pw_stream_events stream_events = {
+    PW_VERSION_STREAM_EVENTS,
+    .process = on_stream_process,
+    .state_changed = on_stream_state_changed,
+};
+
+static gpointer pipewire_loop_thread_func(gpointer data) {
+    PipeWireStreamData *pw_data = data;
+    g_print("Starting PipeWire event loop thread.\n");
+    pw_main_loop_run(pw_data->loop);
+    g_print("PipeWire event loop thread finished.\n");
+    return NULL;
+}
 
 static void
 process_pipewire_stream(XDGFrameRequest *frame_request)
@@ -49,39 +179,303 @@ process_pipewire_stream(XDGFrameRequest *frame_request)
 
     if (frame_request->pipewire_fd < 0) {
         g_print("No PipeWire file descriptor, using test pattern\n");
+        // Create test pattern as fallback
+        if (!frame_request->data) {
+            frame_request->width = 1920;
+            frame_request->height = 1080;
+            frame_request->stride = frame_request->width * 3;
+            size_t data_size = frame_request->height * frame_request->stride;
+            frame_request->data = (unsigned char *)g_malloc(data_size);
+            
+            // Fill with a gradient pattern
+            for (int y = 0; y < frame_request->height; y++) {
+                for (int x = 0; x < frame_request->width; x++) {
+                    int offset = (y * frame_request->stride) + (x * 3);
+                    frame_request->data[offset] = (unsigned char)((x * 255) / frame_request->width);
+                    frame_request->data[offset + 1] = (unsigned char)((y * 255) / frame_request->height);
+                    frame_request->data[offset + 2] = 128;
+                }
+            }
+            g_print("Created test pattern frame: %d x %d\n", frame_request->width, frame_request->height);
+        }
+        frame_request->success = TRUE;
+        frame_request->completed = TRUE;
+        return;
     }
 
-    // For now, we'll create a simple test pattern since implementing full PipeWire
-    // integration would require linking against PipeWire libraries
-    // In a real implementation, you would:
-    // 1. Connect to PipeWire using the provided file descriptor
-    // 2. Set up the stream with the node ID
-    // 3. Read frames from the stream
-    // 4. Convert the frame data to RGB format
+    // Initialize PipeWire
+    pw_init(NULL, NULL);
+
+    // Create PipeWire stream data
+    PipeWireStreamData *pw_data = g_new0(PipeWireStreamData, 1);
+    pw_data->parent_request = frame_request;
+    frame_request->pw_data = pw_data;
+    g_mutex_init(&pw_data->frame_mutex);
+
+    // Create main loop and context
+    pw_data->loop = pw_main_loop_new(NULL);
+    pw_data->context = pw_context_new(pw_main_loop_get_loop(pw_data->loop), NULL, 0);
     
-    // Temporary implementation: create a test pattern
-    if (!frame_request->data) {
-        frame_request->width = 1920;  // Default resolution
+    // Connect to PipeWire using the provided file descriptor
+    pw_data->core = pw_context_connect_fd(pw_data->context, frame_request->pipewire_fd, NULL, 0);
+    if (!pw_data->core) {
+        g_printerr("Failed to connect to PipeWire\n");
+        goto cleanup;
+    }
+
+    // Create stream
+    pw_data->stream = pw_stream_new_simple(
+        pw_main_loop_get_loop(pw_data->loop),
+        "screencast-consumer",
+        pw_properties_new(
+            PW_KEY_MEDIA_TYPE, "Video",
+            PW_KEY_MEDIA_CATEGORY, "Capture",
+            PW_KEY_MEDIA_ROLE, "Screen",
+            NULL),
+        &stream_events,
+        pw_data);
+
+    if (!pw_data->stream) {
+        g_printerr("Failed to create PipeWire stream\n");
+        goto cleanup;
+    }
+
+    // Connect to the specific node
+    uint32_t node_id = atoi(frame_request->stream_node_id);
+    
+    // Set up stream parameters
+    uint8_t buffer[1024];
+    struct spa_pod_builder b = SPA_POD_BUILDER_INIT(buffer, sizeof(buffer));
+    const struct spa_pod *params[1];
+    
+    params[0] = spa_pod_builder_add_object(&b,
+        SPA_TYPE_OBJECT_Format, SPA_PARAM_EnumFormat,
+        SPA_FORMAT_mediaType, SPA_POD_Id(SPA_MEDIA_TYPE_video),
+        SPA_FORMAT_mediaSubtype, SPA_POD_Id(SPA_MEDIA_SUBTYPE_raw),
+        SPA_FORMAT_VIDEO_format, SPA_POD_CHOICE_ENUM_Id(3,
+            SPA_VIDEO_FORMAT_RGBx,
+            SPA_VIDEO_FORMAT_RGBA,
+            SPA_VIDEO_FORMAT_BGRx),
+        SPA_FORMAT_VIDEO_size, SPA_POD_CHOICE_RANGE_Rectangle(
+            &SPA_RECTANGLE(320, 240),
+            &SPA_RECTANGLE(1, 1),
+            &SPA_RECTANGLE(4096, 4096)),
+        SPA_FORMAT_VIDEO_framerate, SPA_POD_CHOICE_RANGE_Fraction(
+            &SPA_FRACTION(25, 1),
+            &SPA_FRACTION(0, 1),
+            &SPA_FRACTION(1000, 1)));
+
+    // Connect stream to the node
+    if (pw_stream_connect(pw_data->stream,
+                         PW_DIRECTION_INPUT,
+                         node_id,
+                         PW_STREAM_FLAG_AUTOCONNECT |
+                         PW_STREAM_FLAG_MAP_BUFFERS,
+                         params, 1) < 0) {
+        g_printerr("Failed to connect PipeWire stream to node %u\n", node_id);
+        goto cleanup;
+    }
+
+    g_print("PipeWire stream connected to node %u\n", node_id);
+
+    // Start PipeWire loop in a separate thread
+    pw_data->pipewire_thread = g_thread_new("pipewire-loop", pipewire_loop_thread_func, pw_data);
+
+    // Wait for the first frame to arrive to ensure session is working
+    g_print("Waiting for the first PipeWire frame...\n");
+    gboolean first_frame_received = FALSE;
+    for (int i = 0; i < 100; i++) { // Wait up to 10 seconds
+        g_mutex_lock(&pw_data->frame_mutex);
+        if (pw_data->frame_ready) {
+            first_frame_received = TRUE;
+        }
+        g_mutex_unlock(&pw_data->frame_mutex);
+        
+        if (first_frame_received) {
+            g_print("First PipeWire frame received.\n");
+            break;
+        }
+        g_usleep(100000); // 100ms
+    }
+
+    if (first_frame_received) {
+        g_mutex_lock(&pw_data->frame_mutex);
+        // Copy frame data to the request
+        frame_request->width = pw_data->frame_width;
+        frame_request->height = pw_data->frame_height;
+        frame_request->stride = pw_data->frame_width * 3;
+        
+        size_t data_size = frame_request->height * frame_request->stride;
+        frame_request->data = (unsigned char *)g_malloc(data_size);
+        memcpy(frame_request->data, pw_data->frame_data, data_size);
+        g_mutex_unlock(&pw_data->frame_mutex);
+        
+        g_print("Real PipeWire frame captured: %dx%d\n", frame_request->width, frame_request->height);
+        frame_request->success = TRUE;
+    } else {
+        g_printerr("Failed to capture PipeWire frame in time, using test pattern\n");
+        // Fallback to test pattern
+        frame_request->width = 1920;
         frame_request->height = 1080;
         frame_request->stride = frame_request->width * 3;
         size_t data_size = frame_request->height * frame_request->stride;
         frame_request->data = (unsigned char *)g_malloc(data_size);
         
-        // Fill with a gradient pattern to indicate screencast is working
         for (int y = 0; y < frame_request->height; y++) {
             for (int x = 0; x < frame_request->width; x++) {
                 int offset = (y * frame_request->stride) + (x * 3);
-                frame_request->data[offset] = (unsigned char)((x * 255) / frame_request->width);     // R
-                frame_request->data[offset + 1] = (unsigned char)((y * 255) / frame_request->height); // G
-                frame_request->data[offset + 2] = 128; // B
+                frame_request->data[offset] = (unsigned char)((x * 255) / frame_request->width);
+                frame_request->data[offset + 1] = (unsigned char)((y * 255) / frame_request->height);
+                frame_request->data[offset + 2] = 128;
             }
         }
-        
-        g_print("Created test pattern frame: %d x %d\n", frame_request->width, frame_request->height);
+        frame_request->success = TRUE;
     }
-    
-    frame_request->success = TRUE;
+
+cleanup:
+    // Note: We keep the PipeWire connection alive for the session
+    // It will be cleaned up when the session is destroyed
     frame_request->completed = TRUE;
+}
+
+// Callback for the Response signal from the Start request
+static void
+on_start_response_signal(GDBusProxy *proxy,
+                         const char *sender_name G_GNUC_UNUSED,
+                         const char *dbus_signal_name,
+                         GVariant   *parameters,
+                         gpointer    user_data)
+{
+    XDGFrameRequest *frame_request = (XDGFrameRequest *)user_data;
+    guint response_code;
+    GVariant *results_dict;
+
+    if (g_strcmp0(dbus_signal_name, "Response") != 0) {
+        return;
+    }
+
+
+    g_variant_get(parameters, "(u@a{sv})", &response_code, &results_dict);
+
+    if (response_code == 0) { // Success
+        GVariantIter iter;
+        GVariant *streams_variant;
+        
+        g_print("Start Response contents:\n");
+        g_variant_iter_init(&iter, results_dict);
+        const char *key;
+        GVariant *value;
+        while (g_variant_iter_next(&iter, "{&sv}", &key, &value)) {
+            g_print("  Key: %s, Type: %s\n", key, g_variant_get_type_string(value));
+            g_variant_unref(value);
+        }
+
+        if (g_variant_lookup(results_dict, "streams", "a(ua{sv})", &streams_variant)) {
+            GVariantIter stream_iter;
+            guint32 node_id;
+            GVariant *stream_properties;
+            
+            g_variant_iter_init(&stream_iter, streams_variant);
+            if (g_variant_iter_next(&stream_iter, "(ua{sv})", &node_id, &stream_properties)) {
+                frame_request->stream_node_id = g_strdup_printf("%u", node_id);
+                g_print("ScreenCast stream started with node ID: %s\n", frame_request->stream_node_id);
+                
+                GVariant *pipewire_fd_variant = NULL;
+                if (g_variant_lookup(stream_properties, "pipewire_fd", "h", &pipewire_fd_variant)) {
+                    frame_request->pipewire_fd = g_variant_get_handle(pipewire_fd_variant);
+                    g_print("Got PipeWire file descriptor: %d\n", frame_request->pipewire_fd);
+                } else {
+                    g_printerr("No PipeWire file descriptor found in stream properties\n");
+                }
+                
+                frame_request->stream_started = TRUE;
+                
+                process_pipewire_stream(frame_request);
+            }
+            g_variant_unref(streams_variant);
+        } else {
+             g_printerr("No 'streams' key found in Start response\n");
+             goto fail_response;
+        }
+    } else {
+        g_printerr("Start method failed with response code: %u\n", response_code);
+        goto fail_response;
+    }
+
+    g_signal_handlers_disconnect_by_data(proxy, user_data);
+    g_object_unref(proxy);
+    frame_request->portal_request_proxy = NULL;
+    if (frame_request->loop_for_sync_call) g_main_loop_quit(frame_request->loop_for_sync_call);
+    return;
+
+fail_response:
+    g_variant_unref(results_dict);
+    g_signal_handlers_disconnect_by_data(proxy, user_data);
+    g_object_unref(proxy);
+    frame_request->portal_request_proxy = NULL;
+    frame_request->completed = TRUE;
+    frame_request->success = FALSE;
+    if (frame_request->loop_for_sync_call) g_main_loop_quit(frame_request->loop_for_sync_call);
+}
+
+// Callback for the Response signal from the SelectSources request
+static void
+on_select_sources_response_signal(GDBusProxy *proxy,
+                                  const char *sender_name G_GNUC_UNUSED,
+                                  const char *dbus_signal_name,
+                                  GVariant   *parameters,
+                                  gpointer    user_data)
+{
+    XDGFrameRequest *frame_request = (XDGFrameRequest *)user_data;
+    guint response_code;
+    GVariant *results_dict;
+
+    if (g_strcmp0(dbus_signal_name, "Response") != 0) {
+        return;
+    }
+
+    g_variant_get(parameters, "(ua{sv})", &response_code, &results_dict);
+
+    if (response_code == 0) { // Success
+        frame_request->sources_selected = TRUE;
+        g_print("ScreenCast sources selected successfully\n");
+
+        // Now start the stream
+        GDBusProxy *session_proxy = g_dbus_proxy_new_for_bus_sync(
+            G_BUS_TYPE_SESSION,
+            G_DBUS_PROXY_FLAGS_NONE,
+            NULL,
+            "org.freedesktop.portal.Desktop",
+            "/org/freedesktop/portal/desktop",
+            "org.freedesktop.portal.ScreenCast",
+            NULL,
+            NULL);
+        
+        if (session_proxy) {
+            GVariantBuilder *start_options_builder = g_variant_builder_new(G_VARIANT_TYPE("a{sv}"));
+            GVariant *start_params = g_variant_new("(osa{sv})", frame_request->session_handle, "", start_options_builder);
+            g_variant_builder_unref(start_options_builder);
+
+            g_dbus_proxy_call(session_proxy,
+                              "Start",
+                              start_params,
+                              G_DBUS_CALL_FLAGS_NONE,
+                              -1,
+                              NULL,
+                              on_screencast_start_completed,
+                              frame_request);
+            g_object_unref(session_proxy);
+        }
+    } else {
+        g_printerr("SelectSources failed with response code: %u\n", response_code);
+        frame_request->completed = TRUE;
+        frame_request->success = FALSE;
+        if (frame_request->loop_for_sync_call) g_main_loop_quit(frame_request->loop_for_sync_call);
+    }
+
+    g_signal_handlers_disconnect_by_data(proxy, user_data);
+    g_object_unref(proxy);
+    frame_request->portal_request_proxy = NULL;
 }
 
 // Callback for ScreenCast Start method completion
@@ -94,6 +488,7 @@ on_screencast_start_completed(GObject *source_object,
     XDGFrameRequest *frame_request = (XDGFrameRequest *)user_data;
     GVariant *result_tuple;
     GError *error = NULL;
+    char *request_handle_path = NULL;
 
     result_tuple = g_dbus_proxy_call_finish(session_proxy, res, &error);
 
@@ -104,63 +499,40 @@ on_screencast_start_completed(GObject *source_object,
     }
 
     if (result_tuple) {
-        // Debug: Check what we actually got
-        g_print("Start method returned type: %s\n", g_variant_get_type_string(result_tuple));
-        
-        // The Start method might return just an object path for the request
-        const char *start_request_path = NULL;
-        if (g_variant_check_format_string(result_tuple, "(o)", FALSE)) {
-            g_variant_get(result_tuple, "(&o)", &start_request_path);
-            g_print("Start method returned request path: %s\n", start_request_path);
-            
-            // For now, we'll assume success and create a test stream
-            frame_request->stream_node_id = g_strdup("test_node");
-            frame_request->pipewire_fd = -1; // No real PipeWire FD yet
-            frame_request->stream_started = TRUE;
-            
-            g_print("ScreenCast Start completed (test mode)\n");
-            
-            // Process the stream with test data
-            process_pipewire_stream(frame_request);
-        } else {
-            // Try the original format in case some implementations return streams directly
-            GVariant *streams_variant = NULL;
-            if (g_variant_check_format_string(result_tuple, "(a(ua{sv}))", FALSE)) {
-                g_variant_get(result_tuple, "(@a(ua{sv}))", &streams_variant);
-                
-                if (streams_variant) {
-                    GVariantIter iter;
-                    guint32 node_id;
-                    GVariant *stream_properties;
-                    
-                    g_variant_iter_init(&iter, streams_variant);
-                    if (g_variant_iter_next(&iter, "(u@a{sv})", &node_id, &stream_properties)) {
-                        frame_request->stream_node_id = g_strdup_printf("%u", node_id);
-                        g_print("ScreenCast stream started with node ID: %s\n", frame_request->stream_node_id);
-                        
-                        // Extract PipeWire file descriptor from stream properties
-                        GVariant *pipewire_fd_variant = NULL;
-                        if (g_variant_lookup(stream_properties, "pipewire-fd", "h", &pipewire_fd_variant)) {
-                            frame_request->pipewire_fd = g_variant_get_handle(pipewire_fd_variant);
-                            g_print("Got PipeWire file descriptor: %d\n", frame_request->pipewire_fd);
-                        } else {
-                            g_printerr("No PipeWire file descriptor found in stream properties\n");
-                        }
-                        
-                        g_variant_unref(stream_properties);
-                        frame_request->stream_started = TRUE;
-                        
-                        // Process the stream
-                        process_pipewire_stream(frame_request);
-                    }
-                    g_variant_unref(streams_variant);
-                }
-            } else {
-                g_printerr("Unexpected Start method response format\n");
+        g_variant_get(result_tuple, "(&o)", &request_handle_path);
+        if (request_handle_path) {
+            g_print("ScreenCast Start request handle: %s\n", request_handle_path);
+
+            GDBusProxy *request_proxy = g_dbus_proxy_new_for_bus_sync(
+                G_BUS_TYPE_SESSION,
+                G_DBUS_PROXY_FLAGS_DO_NOT_LOAD_PROPERTIES,
+                NULL,
+                "org.freedesktop.portal.Desktop",
+                request_handle_path,
+                "org.freedesktop.portal.Request",
+                NULL,
+                &error);
+
+            if (error != NULL) {
+                g_printerr("Error creating Start request proxy: %s\n", error->message);
+                g_error_free(error);
+                g_variant_unref(result_tuple);
                 goto fail;
             }
+
+            g_signal_connect(request_proxy,
+                           "g-signal",
+                           G_CALLBACK(on_start_response_signal),
+                           frame_request);
+
+            frame_request->portal_request_proxy = request_proxy;
         }
         g_variant_unref(result_tuple);
+    }
+
+    if (!request_handle_path) {
+        g_printerr("Failed to get request handle from ScreenCast Start\n");
+        goto fail;
     }
 
     return;
@@ -183,6 +555,7 @@ on_screencast_select_sources_completed(GObject *source_object,
     XDGFrameRequest *frame_request = (XDGFrameRequest *)user_data;
     GVariant *result_tuple;
     GError *error = NULL;
+    char *request_handle_path = NULL;
 
     result_tuple = g_dbus_proxy_call_finish(session_proxy, res, &error);
 
@@ -193,25 +566,41 @@ on_screencast_select_sources_completed(GObject *source_object,
     }
 
     if (result_tuple) {
+        g_variant_get(result_tuple, "(&o)", &request_handle_path);
+        if (request_handle_path) {
+            g_print("ScreenCast SelectSources request handle: %s\n", request_handle_path);
+
+            GDBusProxy *request_proxy = g_dbus_proxy_new_for_bus_sync(
+                G_BUS_TYPE_SESSION,
+                G_DBUS_PROXY_FLAGS_DO_NOT_LOAD_PROPERTIES,
+                NULL,
+                "org.freedesktop.portal.Desktop",
+                request_handle_path,
+                "org.freedesktop.portal.Request",
+                NULL,
+                &error);
+
+            if (error != NULL) {
+                g_printerr("Error creating SelectSources request proxy: %s\n", error->message);
+                g_error_free(error);
+                g_variant_unref(result_tuple);
+                goto fail;
+            }
+
+            g_signal_connect(request_proxy,
+                           "g-signal",
+                           G_CALLBACK(on_select_sources_response_signal),
+                           frame_request);
+
+            frame_request->portal_request_proxy = request_proxy;
+        }
         g_variant_unref(result_tuple);
     }
 
-    frame_request->sources_selected = TRUE;
-    g_print("ScreenCast sources selected successfully\n");
-
-    // Now start the stream
-    GVariantBuilder *start_options_builder = g_variant_builder_new(G_VARIANT_TYPE("a{sv}"));
-    GVariant *start_params = g_variant_new("(osa{sv})", frame_request->session_handle, "", start_options_builder);
-    g_variant_builder_unref(start_options_builder);
-
-    g_dbus_proxy_call(session_proxy,
-                      "Start",
-                      start_params,
-                      G_DBUS_CALL_FLAGS_NONE,
-                      -1,
-                      NULL,
-                      on_screencast_start_completed,
-                      frame_request);
+    if (!request_handle_path) {
+        g_printerr("Failed to get request handle from ScreenCast SelectSources\n");
+        goto fail;
+    }
 
     return;
 
@@ -233,35 +622,42 @@ on_create_session_response_signal(GDBusProxy *proxy,
 {
     XDGFrameRequest *frame_request = (XDGFrameRequest *)user_data;
     guint response_code;
-    GVariant *results_dict;
-    const char *session_handle = NULL;
+    GVariant *result_tuple = NULL;
+    GVariant *results_dict = NULL;
+    char *session_handle_str = NULL;
 
     if (g_strcmp0(dbus_signal_name, "Response") != 0) {
         return;
     }
 
-    g_variant_get(parameters, "(u@a{sv})", &response_code, &results_dict);
+    /* 
+        Here is an example parameters variant:
+        Parameters: (uint32 0, {'session_handle': <'/org/freedesktop/portal/desktop/session/1_6307/viture_screencast_1376226928'>})
+    */
+
+    g_variant_get(parameters, "(ua{sv})", &response_code, &result_tuple);
+
+    results_dict = g_variant_get_child_value(parameters, 1);
+    g_print("Format of child: %s\n", g_variant_get_type_string(results_dict));
+
 
     if (response_code == 0) { // Success
-        // Debug: print all keys in the response
-        GVariantIter iter;
-        const char *key;
-        GVariant *value;
-        g_print("CreateSession Response contents:\n");
-        g_variant_iter_init(&iter, results_dict);
-        while (g_variant_iter_next(&iter, "{&sv}", &key, &value)) {
-            g_print("  Key: %s, Type: %s\n", key, g_variant_get_type_string(value));
-            g_variant_unref(value);
+        if (!results_dict) {
+            g_printerr("CreateSession response dictionary is NULL\n");
+            frame_request->completed = TRUE;
+            frame_request->success = FALSE;
+            if (frame_request->loop_for_sync_call) g_main_loop_quit(frame_request->loop_for_sync_call);
+            goto cleanup;
         }
 
-        // Try different possible key names and types for session handle
-        if (g_variant_lookup(results_dict, "session_handle", "&s", &session_handle) ||
-            g_variant_lookup(results_dict, "session_handle", "&o", &session_handle) ||
-            g_variant_lookup(results_dict, "session", "&s", &session_handle) ||
-            g_variant_lookup(results_dict, "session", "&o", &session_handle) ||
-            g_variant_lookup(results_dict, "handle", "&s", &session_handle) ||
-            g_variant_lookup(results_dict, "handle", "&o", &session_handle)) {
-            frame_request->session_handle = g_strdup(session_handle);
+        g_print("Retrieving session handle\n");
+
+        if (g_variant_lookup(results_dict, "session_handle", "&s", &session_handle_str)) {
+            
+            frame_request->session_handle = g_strdup(session_handle_str);
+           
+            //g_free(session_handle_str); This crashes but why?
+
             g_print("Got session handle from Response: %s\n", frame_request->session_handle);
             frame_request->session_created = TRUE;
 
@@ -307,7 +703,13 @@ on_create_session_response_signal(GDBusProxy *proxy,
         if (frame_request->loop_for_sync_call) g_main_loop_quit(frame_request->loop_for_sync_call);
     }
 
-    g_variant_unref(results_dict);
+cleanup:
+    if (results_dict) {
+        g_variant_unref(results_dict);
+    }
+    if (result_tuple) {
+        g_variant_unref(result_tuple);
+    } 
     g_signal_handlers_disconnect_by_data(proxy, user_data);
     g_object_unref(proxy);
     frame_request->portal_request_proxy = NULL;
@@ -510,22 +912,35 @@ XDGFrameRequest* get_xdg_root_window_frame_sync() {
     // Create a new frame request that copies data from the active session
     XDGFrameRequest *frame_request = g_new0(XDGFrameRequest, 1);
     frame_request->completed = TRUE;
-    frame_request->success = TRUE;
     
-    // Copy frame data from the active session
-    if (g_screencast_session->data) {
-        frame_request->width = g_screencast_session->width;
-        frame_request->height = g_screencast_session->height;
-        frame_request->stride = g_screencast_session->stride;
-        
-        size_t data_size = frame_request->height * frame_request->stride;
-        frame_request->data = (unsigned char *)g_malloc(data_size);
-        memcpy(frame_request->data, g_screencast_session->data, data_size);
-        
-        g_print("Returning screencast frame: %dx%d\n", frame_request->width, frame_request->height);
+    PipeWireStreamData *pw_data = g_screencast_session->pw_data;
+    if (pw_data) {
+        g_mutex_lock(&pw_data->frame_mutex);
+        if (pw_data->frame_ready && pw_data->frame_data) {
+            frame_request->success = TRUE;
+            frame_request->width = pw_data->frame_width;
+            frame_request->height = pw_data->frame_height;
+            frame_request->stride = pw_data->frame_width * 3;
+            
+            size_t data_size = (size_t)frame_request->height * frame_request->stride;
+            frame_request->data = (unsigned char *)g_malloc(data_size);
+            memcpy(frame_request->data, pw_data->frame_data, data_size);
+            
+            // Mark frame as consumed
+            pw_data->frame_ready = FALSE;
+        } else {
+            frame_request->success = FALSE;
+        }
+        g_mutex_unlock(&pw_data->frame_mutex);
     } else {
-        g_printerr("No frame data available in screencast session\n");
         frame_request->success = FALSE;
+    }
+
+    if (!frame_request->success) {
+        // g_printerr("No new frame data available in screencast session\n");
+        g_free(frame_request->data);
+        g_free(frame_request);
+        return NULL;
     }
 
     return frame_request;
@@ -558,6 +973,36 @@ void cleanup_screencast_session() {
     if (g_screencast_session) {
         g_print("Cleaning up screencast session\n");
         
+        // Clean up PipeWire resources
+        if (g_screencast_session->pw_data) {
+            PipeWireStreamData *pw_data = g_screencast_session->pw_data;
+            
+            if (pw_data->loop) {
+                pw_main_loop_quit(pw_data->loop);
+            }
+            if (pw_data->pipewire_thread) {
+                g_thread_join(pw_data->pipewire_thread);
+                pw_data->pipewire_thread = NULL;
+            }
+
+            if (pw_data->stream) {
+                pw_stream_destroy(pw_data->stream);
+            }
+            if (pw_data->core) {
+                pw_core_disconnect(pw_data->core);
+            }
+            if (pw_data->context) {
+                pw_context_destroy(pw_data->context);
+            }
+            if (pw_data->loop) {
+                pw_main_loop_destroy(pw_data->loop);
+            }
+            
+            g_mutex_clear(&pw_data->frame_mutex);
+            g_free(pw_data->frame_data);
+            g_free(pw_data);
+        }
+        
         // Close PipeWire connection
         if (g_screencast_session->pipewire_fd >= 0) {
             close(g_screencast_session->pipewire_fd);
@@ -575,6 +1020,9 @@ void cleanup_screencast_session() {
         g_free(g_screencast_session);
         g_screencast_session = NULL;
         g_screencast_initialized = FALSE;
+        
+        // Deinitialize PipeWire
+        pw_deinit();
     }
 }
 

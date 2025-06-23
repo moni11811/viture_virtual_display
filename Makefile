@@ -28,7 +28,8 @@ OBJS_TEST = $(SRCS_TEST:.c=.o)
 # You might use -g for development and -O2 for release.
 # -std=c11 causes a segfault in the viture code
 GLIB_CFLAGS = $(shell pkg-config --cflags glib-2.0 gio-2.0 gdk-pixbuf-2.0)
-CFLAGS = -Wall -Wextra -g -O2 $(GLIB_CFLAGS)
+PIPEWIRE_CFLAGS = $(shell pkg-config --cflags libpipewire-0.3)
+CFLAGS = -Wall -Wextra -g -O2 $(GLIB_CFLAGS) $(PIPEWIRE_CFLAGS)
 
 # Core graphics libraries
 GRAPHICS_LIBS = -lglut -lGL -lGLU -lusb-1.0
@@ -42,7 +43,8 @@ PTHREAD_LIB = -lpthread
 VITURE_LIB = 3rdparty/lib/libviture_one_sdk_static.a
 
 GLIB_LIBS = $(shell pkg-config --libs glib-2.0 gio-2.0 gdk-pixbuf-2.0)
-LIBS = $(LDFLAGS) $(GRAPHICS_LIBS) $(HIDAPI_LIB) $(PTHREAD_LIB) $(GLIB_LIBS)
+PIPEWIRE_LIBS = $(shell pkg-config --libs libpipewire-0.3)
+LIBS = $(LDFLAGS) $(GRAPHICS_LIBS) $(HIDAPI_LIB) $(PTHREAD_LIB) $(GLIB_LIBS) $(PIPEWIRE_LIBS)
 LIBS_TEST = $(LDFLAGS) $(HIDAPI_LIB) $(PTHREAD_LIB) $(GLIB_LIBS)
 LIBS_TEST_CONVERSIONS = $(LDFLAGS)
 
