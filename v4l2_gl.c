@@ -492,7 +492,7 @@ void display() {
         glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, actual_frame_width, actual_frame_height, GL_RGB, GL_UNSIGNED_BYTE, rgb_frames[front_buffer_idx]);
     }
 
-    if ( initial_offsets_set || current_capture_mode == MODE_XDG) { // Draw quad if IMU is set or in XDG mode
+    if ( initial_offsets_set || current_capture_mode == MODE_XDG || display_test_pattern) { // Draw quad if IMU is set, in XDG mode, or displaying test pattern
         float aspect_ratio = (float)actual_frame_width / (float)actual_frame_height;
         glBegin(GL_QUADS);
             glTexCoord2f(0.0f, 1.0f); glVertex3f(-aspect_ratio, -1.0f, 0.0f);
@@ -533,37 +533,33 @@ void capture_and_update() {
         exit(EXIT_FAILURE);
     }
     
-    if (display_test_pattern) {
-        fill_frame_with_pattern(rgb_frames[back_buffer_idx], actual_frame_width, actual_frame_height);
-    } else {
-        if (active_buffer_type == V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE) {
-            if (active_pixel_format == V4L2_PIX_FMT_NV24 && num_planes_per_buffer >= 2) {
-                convert_nv24_to_rgb(
-                    (const unsigned char *)buffers_mp[buf.index].planes[0].start,
-                    (const unsigned char *)buffers_mp[buf.index].planes[1].start,
-                    rgb_frames[back_buffer_idx], actual_frame_width, actual_frame_height);
-            } else if (active_pixel_format == V4L2_PIX_FMT_NV24 && num_planes_per_buffer == 1) { 
-                convert_nv24_to_rgb(
-                    (const unsigned char *)buffers_mp[buf.index].planes[0].start,
-                    (const unsigned char *)buffers_mp[buf.index].planes[0].start + actual_frame_width * actual_frame_height, 
-                    rgb_frames[back_buffer_idx], actual_frame_width, actual_frame_height);
-            } else {
-                 fprintf(stderr, "Error: Unsupported MPLANE pixel format %c%c%c%c or plane count %u\n",
-                        (active_pixel_format)&0xFF, (active_pixel_format>>8)&0xFF,
-                        (active_pixel_format>>16)&0xFF, (active_pixel_format>>24)&0xFF,
-                        num_planes_per_buffer);
-                fill_frame_with_pattern(rgb_frames[back_buffer_idx], actual_frame_width, actual_frame_height);
-            }
-        } else { // Single-plane
-            if (active_pixel_format == V4L2_PIX_FMT_YUYV) {
-                convert_yuyv_to_rgb((const unsigned char *)buffers_mp[buf.index].planes[0].start, 
-                                     rgb_frames[back_buffer_idx], actual_frame_width, actual_frame_height, buf.bytesused);
-            } else {
-                 fprintf(stderr, "Error: Unsupported SINGLE-PLANE pixel format %c%c%c%c\n",
-                        (active_pixel_format)&0xFF, (active_pixel_format>>8)&0xFF,
-                        (active_pixel_format>>16)&0xFF, (active_pixel_format>>24)&0xFF);
-                fill_frame_with_pattern(rgb_frames[back_buffer_idx], actual_frame_width, actual_frame_height);
-            }
+    if (active_buffer_type == V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE) {
+        if (active_pixel_format == V4L2_PIX_FMT_NV24 && num_planes_per_buffer >= 2) {
+            convert_nv24_to_rgb(
+                (const unsigned char *)buffers_mp[buf.index].planes[0].start,
+                (const unsigned char *)buffers_mp[buf.index].planes[1].start,
+                rgb_frames[back_buffer_idx], actual_frame_width, actual_frame_height);
+        } else if (active_pixel_format == V4L2_PIX_FMT_NV24 && num_planes_per_buffer == 1) { 
+            convert_nv24_to_rgb(
+                (const unsigned char *)buffers_mp[buf.index].planes[0].start,
+                (const unsigned char *)buffers_mp[buf.index].planes[0].start + actual_frame_width * actual_frame_height, 
+                rgb_frames[back_buffer_idx], actual_frame_width, actual_frame_height);
+        } else {
+             fprintf(stderr, "Error: Unsupported MPLANE pixel format %c%c%c%c or plane count %u\n",
+                    (active_pixel_format)&0xFF, (active_pixel_format>>8)&0xFF,
+                    (active_pixel_format>>16)&0xFF, (active_pixel_format>>24)&0xFF,
+                    num_planes_per_buffer);
+            fill_frame_with_pattern(rgb_frames[back_buffer_idx], actual_frame_width, actual_frame_height);
+        }
+    } else { // Single-plane
+        if (active_pixel_format == V4L2_PIX_FMT_YUYV) {
+            convert_yuyv_to_rgb((const unsigned char *)buffers_mp[buf.index].planes[0].start, 
+                                 rgb_frames[back_buffer_idx], actual_frame_width, actual_frame_height, buf.bytesused);
+        } else {
+             fprintf(stderr, "Error: Unsupported SINGLE-PLANE pixel format %c%c%c%c\n",
+                    (active_pixel_format)&0xFF, (active_pixel_format>>8)&0xFF,
+                    (active_pixel_format>>16)&0xFF, (active_pixel_format>>24)&0xFF);
+            fill_frame_with_pattern(rgb_frames[back_buffer_idx], actual_frame_width, actual_frame_height);
         }
     }
 
@@ -636,7 +632,12 @@ void idle()
     // For XDG, we might capture here or in display() before drawing.
     // Let's try capturing XDG frames here to decouple from display's GL context needs.
 
-    if (current_capture_mode == MODE_XDG) {
+    if (display_test_pattern) {
+        fill_frame_with_pattern(rgb_frames[back_buffer_idx], actual_frame_width, actual_frame_height);
+        pthread_mutex_lock(&frame_mutex);
+        new_frame_captured = true;
+        pthread_mutex_unlock(&frame_mutex);
+    } else if (current_capture_mode == MODE_XDG) {
         XDGFrameRequest *xdg_frame = get_xdg_root_window_frame_sync();
         if (xdg_frame && xdg_frame->success && xdg_frame->data) {
             if (xdg_frame->width != xdg_prev_frame_width || xdg_frame->height != xdg_prev_frame_height) {
@@ -827,9 +828,9 @@ if (use_viture_imu) {
         glutCreateWindow("V4L2 Real-time Display");
     }
     
-    if (current_capture_mode == MODE_V4L2) {
+    if (current_capture_mode == MODE_V4L2 && !display_test_pattern) {
         init_v4l2(); 
-    } else { // MODE_XDG
+    } else if (current_capture_mode == MODE_XDG) { // MODE_XDG
         // For XDG, we need to get initial dimensions.
         // actual_frame_width/height will be updated by the first successful XDG frame.
         // init_gl will use these. If first XDG frame fails, it might use defaults.
@@ -861,7 +862,7 @@ if (use_viture_imu) {
     atexit(cleanup);
 
     // Create and start the capture thread only for V4L2 mode
-    if (current_capture_mode == MODE_V4L2) {
+    if (current_capture_mode == MODE_V4L2 && !display_test_pattern) {
         printf("V4L2_GL: Creating V4L2 capture thread...\n");
         if (pthread_create(&capture_thread_id, NULL, capture_thread_func, NULL) != 0) {
             perror("Failed to create V4L2 capture thread");
