@@ -492,7 +492,7 @@ void display() {
         glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, actual_frame_width, actual_frame_height, GL_RGB, GL_UNSIGNED_BYTE, rgb_frames[front_buffer_idx]);
     }
 
-    if ( initial_offsets_set || current_capture_mode == MODE_XDG || display_test_pattern) { // Draw quad if IMU is set, in XDG mode, or displaying test pattern
+    if ( (use_viture_imu && initial_offsets_set) || current_capture_mode == MODE_XDG || display_test_pattern) { // Draw quad if IMU is set, in XDG mode, or displaying test pattern
         float aspect_ratio = (float)actual_frame_width / (float)actual_frame_height;
         glBegin(GL_QUADS);
             glTexCoord2f(0.0f, 1.0f); glVertex3f(-aspect_ratio, -1.0f, 0.0f);
@@ -681,9 +681,8 @@ void idle()
                  fprintf(stderr, "V4L2_GL: rgb_frames not allocated, cannot copy XDG frame.\n");
             }
             free_xdg_frame_request(xdg_frame);
-        } else {
-            if (xdg_frame) free_xdg_frame_request(xdg_frame);
-            // fprintf(stderr, "V4L2_GL: Failed to get XDG frame in idle().\n");
+        } else if (xdg_frame) {
+            free_xdg_frame_request(xdg_frame);
         }
     }
 
@@ -831,27 +830,11 @@ if (use_viture_imu) {
     if (current_capture_mode == MODE_V4L2 && !display_test_pattern) {
         init_v4l2(); 
     } else if (current_capture_mode == MODE_XDG) { // MODE_XDG
-        // For XDG, we need to get initial dimensions.
-        // actual_frame_width/height will be updated by the first successful XDG frame.
-        // init_gl will use these. If first XDG frame fails, it might use defaults.
-        printf("V4L2_GL: Attempting to get initial XDG frame for dimensions...\n");
-        XDGFrameRequest *initial_frame = get_xdg_root_window_frame_sync();
-        if (initial_frame && initial_frame->success && initial_frame->data) {
-            actual_frame_width = initial_frame->width;
-            actual_frame_height = initial_frame->height;
-            printf("V4L2_GL: Initial XDG frame: %dx%d\n", actual_frame_width, actual_frame_height);
-            // We don't need to keep this frame's data yet, just dimensions.
-            // Or we could use it as the first frame. For now, just dimensions.
-            xdg_prev_frame_width = actual_frame_width; // Store for later comparison
-            xdg_prev_frame_height = actual_frame_height;
-            texture_needs_respecification = true; // Ensure texture is set up for these dimensions
-        } else {
-            fprintf(stderr, "V4L2_GL: Failed to get initial XDG frame. Using default %dx%d.\n", FRAME_WIDTH, FRAME_HEIGHT);
-            actual_frame_width = FRAME_WIDTH; // Fallback
-            actual_frame_height = FRAME_HEIGHT;
-            // Consider exiting if XDG mode is critical and fails here.
+        printf("V4L2_GL: Initializing XDG screen capture session...\n");
+        if (!init_screencast_session()) {
+            fprintf(stderr, "V4L2_GL: Failed to initialize XDG screencast session. Exiting.\n");
+            exit(EXIT_FAILURE);
         }
-        if (initial_frame) free_xdg_frame_request(initial_frame);
     }
 
     init_gl();   

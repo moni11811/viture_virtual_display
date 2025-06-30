@@ -37,6 +37,7 @@ struct PipeWireStreamData {
     int frame_height;
     int frame_stride;
     gboolean frame_ready;
+    gboolean stream_ready;
     GMutex frame_mutex;
     GThread *pipewire_thread;
     
@@ -148,10 +149,12 @@ static void on_stream_process(void *userdata)
 
 static void on_stream_state_changed(void *userdata, enum pw_stream_state old, enum pw_stream_state state, const char *error)
 {
-    (void)userdata;
+    PipeWireStreamData *pw_data = userdata;
     g_print("PipeWire stream state changed: %s -> %s\n", pw_stream_state_as_string(old), pw_stream_state_as_string(state));
     
-    if (state == PW_STREAM_STATE_ERROR) {
+    if (state == PW_STREAM_STATE_STREAMING) {
+        pw_data->stream_ready = TRUE;
+    } else if (state == PW_STREAM_STATE_ERROR) {
         g_printerr("PipeWire stream error: %s\n", error);
     }
 }
@@ -282,55 +285,23 @@ process_pipewire_stream(XDGFrameRequest *frame_request)
     // Start PipeWire loop in a separate thread
     pw_data->pipewire_thread = g_thread_new("pipewire-loop", pipewire_loop_thread_func, pw_data);
 
-    // Wait for the first frame to arrive to ensure session is working
-    g_print("Waiting for the first PipeWire frame...\n");
-    gboolean first_frame_received = FALSE;
+    // Wait for the stream to be ready
+    g_print("Waiting for the PipeWire stream to start...\n");
+    gboolean stream_is_ready = FALSE;
     for (int i = 0; i < 100; i++) { // Wait up to 10 seconds
-        g_mutex_lock(&pw_data->frame_mutex);
-        if (pw_data->frame_ready) {
-            first_frame_received = TRUE;
-        }
-        g_mutex_unlock(&pw_data->frame_mutex);
-        
-        if (first_frame_received) {
-            g_print("First PipeWire frame received.\n");
+        if (pw_data->stream_ready) {
+            stream_is_ready = TRUE;
             break;
         }
         g_usleep(100000); // 100ms
     }
 
-    if (first_frame_received) {
-        g_mutex_lock(&pw_data->frame_mutex);
-        // Copy frame data to the request
-        frame_request->width = pw_data->frame_width;
-        frame_request->height = pw_data->frame_height;
-        frame_request->stride = pw_data->frame_width * 3;
-        
-        size_t data_size = frame_request->height * frame_request->stride;
-        frame_request->data = (unsigned char *)g_malloc(data_size);
-        memcpy(frame_request->data, pw_data->frame_data, data_size);
-        g_mutex_unlock(&pw_data->frame_mutex);
-        
-        g_print("Real PipeWire frame captured: %dx%d\n", frame_request->width, frame_request->height);
+    if (stream_is_ready) {
+        g_print("PipeWire stream is active.\n");
         frame_request->success = TRUE;
     } else {
-        g_printerr("Failed to capture PipeWire frame in time, using test pattern\n");
-        // Fallback to test pattern
-        frame_request->width = 1920;
-        frame_request->height = 1080;
-        frame_request->stride = frame_request->width * 3;
-        size_t data_size = frame_request->height * frame_request->stride;
-        frame_request->data = (unsigned char *)g_malloc(data_size);
-        
-        for (int y = 0; y < frame_request->height; y++) {
-            for (int x = 0; x < frame_request->width; x++) {
-                int offset = (y * frame_request->stride) + (x * 3);
-                frame_request->data[offset] = (unsigned char)((x * 255) / frame_request->width);
-                frame_request->data[offset + 1] = (unsigned char)((y * 255) / frame_request->height);
-                frame_request->data[offset + 2] = 128;
-            }
-        }
-        frame_request->success = TRUE;
+        g_printerr("PipeWire stream failed to start in time.\n");
+        frame_request->success = FALSE;
     }
 
 cleanup:
@@ -893,7 +864,7 @@ static gboolean screencast_timeout_callback(gpointer user_data) {
     return G_SOURCE_REMOVE;
 }
 
-static XDGFrameRequest* init_screencast_session() {
+XDGFrameRequest* init_screencast_session() {
     if (g_screencast_session && g_screencast_initialized) {
         // Return existing session
         return g_screencast_session;

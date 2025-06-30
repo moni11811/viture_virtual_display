@@ -60,5 +60,6 @@ void free_xdg_frame_request(XDGFrameRequest* frame_req);
  * get_xdg_root_window_frame_sync() will reinitialize the screencast session.
  */
 void cleanup_screencast_session(void);
+XDGFrameRequest* init_screencast_session(void);
 
 #endif // XDG_SOURCE_H
