@@ -83,7 +83,9 @@ static void on_stream_process(void *userdata)
     struct pw_buffer *b;
     struct spa_buffer *buf;
     struct spa_data *d;
-    
+ 
+    g_print ("Processing PipeWire stream frame...\n");
+
     if ((b = pw_stream_dequeue_buffer(pw_data->stream)) == NULL) {
         g_printerr("Out of buffers: %m\n");
         return;
@@ -124,25 +126,25 @@ static void on_stream_process(void *userdata)
     }
 
     // Convert from BGRA to RGB
-    uint8_t *src = (uint8_t *)d->data;
-    uint8_t *dst = pw_data->frame_data;
+    // uint8_t *src = (uint8_t *)d->data;
+    // uint8_t *dst = pw_data->frame_data;
     
-    for (int y = 0; y < pw_data->frame_height; y++) {
-        for (int x = 0; x < pw_data->frame_width; x++) {
-            int src_offset = (y * pw_data->frame_stride) + (x * 4);
-            int dst_offset = (y * pw_data->frame_width * 3) + (x * 3);
+    // for (int y = 0; y < pw_data->frame_height; y++) {
+    //     for (int x = 0; x < pw_data->frame_width; x++) {
+    //         int src_offset = (y * pw_data->frame_stride) + (x * 4);
+    //         int dst_offset = (y * pw_data->frame_width * 3) + (x * 3);
             
-            // Convert BGRA to RGB
-            dst[dst_offset + 0] = src[src_offset + 2]; // R
-            dst[dst_offset + 1] = src[src_offset + 1]; // G
-            dst[dst_offset + 2] = src[src_offset + 0]; // B
-            // Skip alpha channel
-        }
-    }
+    //         // Convert BGRA to RGB
+    //         dst[dst_offset + 0] = src[src_offset + 2]; // R
+    //         dst[dst_offset + 1] = src[src_offset + 1]; // G
+    //         dst[dst_offset + 2] = src[src_offset + 0]; // B
+    //         // Skip alpha channel
+    //     }
+    // }
 
     pw_data->frame_ready = TRUE;
     g_mutex_unlock(&pw_data->frame_mutex);
-    // g_print("PipeWire frame processed: %dx%d\n", pw_data->frame_width, pw_data->frame_height);
+    g_print("PipeWire frame processed: %dx%d\n", pw_data->frame_width, pw_data->frame_height);
 
     pw_stream_queue_buffer(pw_data->stream, b);
 }
@@ -154,6 +156,9 @@ static void on_stream_state_changed(void *userdata, enum pw_stream_state old, en
     
     if (state == PW_STREAM_STATE_STREAMING) {
         pw_data->stream_ready = TRUE;
+    } else if (state == PW_STREAM_STATE_PAUSED) {
+        g_print("PipeWire stream paused trying to restart.\n");
+        pw_stream_set_active(pw_data->stream, true);
     } else if (state == PW_STREAM_STATE_ERROR) {
         g_printerr("PipeWire stream error: %s\n", error);
     }
@@ -981,6 +986,7 @@ XDGFrameRequest* get_xdg_root_window_frame_sync() {
     
     PipeWireStreamData *pw_data = g_screencast_session->pw_data;
     if (pw_data) {
+
         g_mutex_lock(&pw_data->frame_mutex);
         if (pw_data->frame_ready && pw_data->frame_data) {
             frame_request->success = TRUE;
@@ -992,8 +998,7 @@ XDGFrameRequest* get_xdg_root_window_frame_sync() {
             frame_request->data = (unsigned char *)g_malloc(data_size);
             memcpy(frame_request->data, pw_data->frame_data, data_size);
             
-            // Mark frame as consumed
-            pw_data->frame_ready = FALSE;
+            pw_data->frame_ready = FALSE; // Consume the frame
         } else {
             frame_request->success = FALSE;
         }

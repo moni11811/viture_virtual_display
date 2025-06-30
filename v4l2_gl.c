@@ -640,7 +640,9 @@ void idle()
     } else if (current_capture_mode == MODE_XDG) {
         XDGFrameRequest *xdg_frame = get_xdg_root_window_frame_sync();
         if (xdg_frame && xdg_frame->success && xdg_frame->data) {
-            if (xdg_frame->width != xdg_prev_frame_width || xdg_frame->height != xdg_prev_frame_height) {
+            printf("Got Data\n");
+            if (xdg_frame->width != xdg_prev_frame_width || xdg_frame->height != xdg_prev_frame_height)
+            {
                 printf("V4L2_GL: XDG frame dimensions changed to %dx%d (from %dx%d)\n", 
                        xdg_frame->width, xdg_frame->height, xdg_prev_frame_width, xdg_prev_frame_height);
                 actual_frame_width = xdg_frame->width;
@@ -680,8 +682,14 @@ void idle()
             } else {
                  fprintf(stderr, "V4L2_GL: rgb_frames not allocated, cannot copy XDG frame.\n");
             }
-            free_xdg_frame_request(xdg_frame);
-        } else if (xdg_frame) {
+        } else {
+            static int xdg_frame_fail_count = 0;
+            xdg_frame_fail_count++;
+            if (xdg_frame_fail_count % 5000 == 0) { // Print every
+                printf("V4L2_GL: XDG frame request failed or no data available.\n");
+            }
+        }
+        if (xdg_frame) {
             free_xdg_frame_request(xdg_frame);
         }
     }
