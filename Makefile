@@ -10,15 +10,18 @@ TARGET = v4l2_gl
 TARGET_VITURE_SDK = v4l2_gl_viture_sdk
 TARGET_TEST = test_viture
 TARGET_TEST_CONVERSIONS = test_conversions
+TARGET_TEST_XDG = test_xdg
 
 # Source files (add more .c files here if your project grows)
 SRCS = v4l2_gl.c viture_connection.c utility.c xdg_source.c
 SRCS_TEST = test_viture.c viture_connection.c utility.c
 SRC_TEST_CONVERSIONS = test_conversions.c utility.c
+SRCS_TEST_XDG = xdg_source.c
 
 # Object files (automatically generated from SRCS)
 OBJS = $(SRCS:.c=.o)
 OBJS_TEST = $(SRCS_TEST:.c=.o)
+OBJS_TEST_XDG = $(SRCS_TEST_XDG:.c=.o)
 
 # Compiler flags:
 # -Wall:      Enable all standard warnings
@@ -27,7 +30,7 @@ OBJS_TEST = $(SRCS_TEST:.c=.o)
 # -O2:        Optimization level 2 (for performance)
 # You might use -g for development and -O2 for release.
 # -std=c11 causes a segfault in the viture code
-GLIB_CFLAGS = $(shell pkg-config --cflags glib-2.0 gio-2.0 gdk-pixbuf-2.0)
+GLIB_CFLAGS = $(shell pkg-config --cflags glib-2.0 gio-2.0 gdk-pixbuf-2.0 gio-unix-2.0)
 PIPEWIRE_CFLAGS = $(shell pkg-config --cflags libpipewire-0.3)
 CFLAGS = -Wall -Wextra -g -O2 $(GLIB_CFLAGS) $(PIPEWIRE_CFLAGS)
 
@@ -42,7 +45,7 @@ PTHREAD_LIB = -lpthread
 # For test_viture, we only need viture_connection.o, which itself doesn't use VITURE_LIB.
 VITURE_LIB = 3rdparty/lib/libviture_one_sdk_static.a
 
-GLIB_LIBS = $(shell pkg-config --libs glib-2.0 gio-2.0 gdk-pixbuf-2.0)
+GLIB_LIBS = $(shell pkg-config --libs glib-2.0 gio-2.0 gdk-pixbuf-2.0 gio-unix-2.0)
 PIPEWIRE_LIBS = $(shell pkg-config --libs libpipewire-0.3)
 LIBS = $(GRAPHICS_LIBS) $(HIDAPI_LIB) $(PTHREAD_LIB) $(GLIB_LIBS) $(PIPEWIRE_LIBS)
 LIBS_TEST = $(HIDAPI_LIB) $(PTHREAD_LIB) $(GLIB_LIBS)
@@ -56,7 +59,7 @@ RM = rm -f
 
 # The default goal is 'all', which builds the target executable.
 # The .PHONY directive tells make that 'all' is not a file.
-.PHONY: all test viture_sdk test_conversions
+.PHONY: all test viture_sdk test_conversions test_xdg
 all: $(TARGET)
 
 test: $(TARGET_TEST)
@@ -64,6 +67,8 @@ test: $(TARGET_TEST)
 viture_sdk: $(TARGET_VITURE_SDK)
 
 test_conversions: $(TARGET_TEST_CONVERSIONS)
+
+test_xdg: $(TARGET_TEST_XDG)
 
 # Rule to link the object files into the final executable.
 # The executable depends on all the object files.
@@ -90,6 +95,16 @@ $(TARGET_TEST_CONVERSIONS): test_conversions.c utility.c
 	$(CC) -g -msse4.1 -o $(TARGET_TEST_CONVERSIONS) test_conversions.c utility.c $(CFLAGS) $(LIBS_TEST_CONVERSIONS)
 	@echo "==> Build complete: ./"$(TARGET_TEST_CONVERSIONS)
 
+# Rule to link the test_xdg executable
+$(TARGET_TEST_XDG): xdg_source_test.o
+	@echo "==> Linking $(TARGET_TEST_XDG)..."
+	$(CC) -o $(TARGET_TEST_XDG) xdg_source_test.o $(LIBS)
+	@echo "==> Build complete: ./"$(TARGET_TEST_XDG)
+
+xdg_source_test.o: xdg_source.c
+	@echo "==> Compiling $< for testing..."
+	$(CC) $(CFLAGS) -DTEST_XDG_SOURCE -I. -c -o $@ $<
+
 
 
 # Pattern rule to compile .c files into .o files.
@@ -109,5 +124,5 @@ v4l2_gl_viture_sdk.o: v4l2_gl.c
 .PHONY: clean
 clean:
 	@echo "==> Cleaning up..."
-	$(RM) $(TARGET) $(TARGET_TEST) $(TARGET_VITURE_SDK) $(TARGET_TEST_CONVERSIONS) $(OBJS) $(OBJS_TEST)
+	$(RM) $(TARGET) $(TARGET_TEST) $(TARGET_VITURE_SDK) $(TARGET_TEST_CONVERSIONS) $(TARGET_TEST_XDG) $(OBJS) $(OBJS_TEST) $(OBJS_TEST_XDG) xdg_source_test.o
 	@echo "==> Done."

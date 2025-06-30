@@ -4,6 +4,7 @@
 #include <glib.h>
 #include <gio/gio.h>
 #include <gio/gdbusproxy.h> // For GDBusProxy functions
+#include <gio/gunixfdlist.h> // For GUnixFDList
 #include <gdk-pixbuf/gdk-pixbuf.h> // For image loading
 #include <stdio.h>
 #include <stdlib.h>
@@ -90,9 +91,6 @@ static void on_stream_process(void *userdata)
         g_printerr("Out of buffers: %m\n");
         return;
     }
-
-    pw_stream_queue_buffer(pw_data->stream, b);
-    return;
 
     buf = b->buffer;
     d = &buf->datas[0];
@@ -1100,36 +1098,34 @@ void cleanup_screencast_session() {
     }
 }
 
-/*
-// Example usage
-int main() {
-    XDGFrameRequest *frame = get_xdg_root_window_frame_sync();
-
-    if (frame && frame->data) {
-        g_print("ScreenCast frame received.\n");
-        g_print("Width: %d, Height: %d, Stride: %d\n", frame->width, frame->height, frame->stride);
-        
-        // Process frame->data
-        // Save to PPM file for testing
-        FILE *f = fopen("screencast.ppm", "wb");
-        if (f) {
-            fprintf(f, "P6\n%d %d\n255\n", frame->width, frame->height);
-            if (frame->stride == frame->width * 3) {
-                fwrite(frame->data, frame->height * frame->stride, 1, f);
-            } else {
-                for (int i = 0; i < frame->height; ++i) {
-                    fwrite(frame->data + i * frame->stride, frame->width * 3, 1, f);
-                }
-            }
-            fclose(f);
-            g_print("Saved screencast to screencast.ppm\n");
-        }
-    } else {
-        g_printerr("Failed to get screencast frame or no data.\n");
+#ifdef TEST_XDG_SOURCE
+int main(int argc, char **argv) {
+    g_print("Initializing screencast session...\n");
+    XDGFrameRequest *session = init_screencast_session();
+    if (!session) {
+        g_printerr("Failed to initialize screencast session.\n");
+        return 1;
     }
 
-    free_xdg_frame_request(frame);
+    g_print("Screencast session initialized. Capturing 10 frames...\n");
+
+    for (int i = 0; i < 10; ++i) {
+        g_print("Attempting to capture frame %d...\n", i + 1);
+        XDGFrameRequest *frame = get_xdg_root_window_frame_sync();
+        if (frame) {
+            g_print("Frame %d captured successfully: %dx%d\n", i + 1, frame->width, frame->height);
+            free_xdg_frame_request(frame);
+        } else {
+            g_printerr("Failed to capture frame %d.\n", i + 1);
+        }
+        // Sleep for a bit to simulate processing or to wait for a new frame
+        g_usleep(100000); // 100ms
+    }
+
+    g_print("Finished capturing frames. Cleaning up...\n");
     cleanup_screencast_session();
+    g_print("Cleanup complete.\n");
+
     return 0;
 }
-*/
+#endif
