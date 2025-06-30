@@ -403,14 +403,20 @@ on_start_response_signal(GDBusProxy *proxy,
                     NULL);
                 
                 if (screencast_proxy) {
-                    g_dbus_proxy_call(screencast_proxy,
-                                      "OpenPipeWireRemote",
-                                      g_variant_new("(oa{sv})", frame_request->session_handle, NULL),
-                                      G_DBUS_CALL_FLAGS_NONE,
-                                      -1,
-                                      NULL,
-                                      on_open_pipewire_remote_completed,
-                                      frame_request);
+                    GDBusConnection *connection = g_dbus_proxy_get_connection(screencast_proxy);
+                    g_dbus_connection_call_with_unix_fd_list(connection,
+                                                             "org.freedesktop.portal.Desktop",
+                                                             "/org/freedesktop/portal/desktop",
+                                                             "org.freedesktop.portal.ScreenCast",
+                                                             "OpenPipeWireRemote",
+                                                             g_variant_new("(oa{sv})", frame_request->session_handle, NULL),
+                                                             G_VARIANT_TYPE("(h)"),
+                                                             G_DBUS_CALL_FLAGS_NONE,
+                                                             -1,
+                                                             NULL,
+                                                             NULL, // No FD list to send
+                                                             (GAsyncReadyCallback)on_open_pipewire_remote_completed,
+                                                             frame_request);
                     g_object_unref(screencast_proxy);
                 }
             }
@@ -427,7 +433,7 @@ on_start_response_signal(GDBusProxy *proxy,
     g_signal_handlers_disconnect_by_data(proxy, user_data);
     g_object_unref(proxy);
     frame_request->portal_request_proxy = NULL;
-    if (frame_request->loop_for_sync_call) g_main_loop_quit(frame_request->loop_for_sync_call);
+    // The main loop is quit in on_open_pipewire_remote_completed
     return;
 
 fail_response:
@@ -446,12 +452,17 @@ on_open_pipewire_remote_completed(GObject *source_object,
                                   GAsyncResult *res,
                                   gpointer user_data)
 {
-    GDBusProxy *proxy = G_DBUS_PROXY(source_object);
+    GDBusConnection *connection = G_DBUS_CONNECTION(source_object);
     XDGFrameRequest *frame_request = (XDGFrameRequest *)user_data;
     GVariant *result_tuple;
     GError *error = NULL;
+    GUnixFDList *fd_list = NULL;
+    gint handle;
 
-    result_tuple = g_dbus_proxy_call_finish(proxy, res, &error);
+    result_tuple = g_dbus_connection_call_with_unix_fd_list_finish(connection,
+                                                                   &fd_list,
+                                                                   res,
+                                                                   &error);
 
     if (error != NULL) {
         g_printerr("Error calling OpenPipeWireRemote: %s\n", error->message);
@@ -460,20 +471,36 @@ on_open_pipewire_remote_completed(GObject *source_object,
     }
 
     if (result_tuple) {
+        g_variant_get(result_tuple, "(h)", &handle);
         g_print("OpenPipeWireRemote result: %s\n", g_variant_print(result_tuple, TRUE));
-        GVariant *tmp;
-        tmp = g_variant_get_child_value(result_tuple, 0);
-        frame_request->pipewire_fd = g_variant_get_handle(tmp);
-        //g_variant_get(result_tuple, "(h)", &frame_request->pipewire_fd);
-        g_print("Got PipeWire file descriptor: %d\n", frame_request->pipewire_fd);
-        g_variant_unref(result_tuple);
         
+        if (fd_list) {
+            frame_request->pipewire_fd = g_unix_fd_list_get(fd_list, handle, &error);
+            if (error) {
+                g_printerr("Failed to get file descriptor from list: %s\n", error->message);
+                g_error_free(error);
+                g_object_unref(fd_list);
+                g_variant_unref(result_tuple);
+                goto fail;
+            }
+            g_print("Got PipeWire file descriptor: %d\n", frame_request->pipewire_fd);
+            g_object_unref(fd_list);
+        } else {
+            g_printerr("No file descriptor list received\n");
+            g_variant_unref(result_tuple);
+            goto fail;
+        }
+        
+        g_variant_unref(result_tuple);
         process_pipewire_stream(frame_request);
     } else {
         g_printerr("Failed to get file descriptor from OpenPipeWireRemote\n");
         goto fail;
     }
 
+    if (frame_request->loop_for_sync_call && g_main_loop_is_running(frame_request->loop_for_sync_call)) {
+        g_main_loop_quit(frame_request->loop_for_sync_call);
+    }
     return;
 
 fail:

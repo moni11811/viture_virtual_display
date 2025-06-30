@@ -44,9 +44,9 @@ VITURE_LIB = 3rdparty/lib/libviture_one_sdk_static.a
 
 GLIB_LIBS = $(shell pkg-config --libs glib-2.0 gio-2.0 gdk-pixbuf-2.0)
 PIPEWIRE_LIBS = $(shell pkg-config --libs libpipewire-0.3)
-LIBS = $(LDFLAGS) $(GRAPHICS_LIBS) $(HIDAPI_LIB) $(PTHREAD_LIB) $(GLIB_LIBS) $(PIPEWIRE_LIBS)
-LIBS_TEST = $(LDFLAGS) $(HIDAPI_LIB) $(PTHREAD_LIB) $(GLIB_LIBS)
-LIBS_TEST_CONVERSIONS = $(LDFLAGS)
+LIBS = $(GRAPHICS_LIBS) $(HIDAPI_LIB) $(PTHREAD_LIB) $(GLIB_LIBS) $(PIPEWIRE_LIBS)
+LIBS_TEST = $(HIDAPI_LIB) $(PTHREAD_LIB) $(GLIB_LIBS)
+LIBS_TEST_CONVERSIONS =
 
 # Standard command for removing files
 RM = rm -f
