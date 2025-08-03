@@ -12,6 +12,7 @@
 #include <unistd.h>
 #include <sys/mman.h>
 #include <fcntl.h>
+#include <pthread.h>
 
 // PipeWire includes
 #include <pipewire/pipewire.h>
@@ -24,6 +25,7 @@
 // Forward declaration
 typedef struct XDGFrameRequest XDGFrameRequest;
 typedef struct PipeWireStreamData PipeWireStreamData;
+static pthread_t main_loop_thread;
 
 // PipeWire stream data structure
 struct PipeWireStreamData {
@@ -40,7 +42,7 @@ struct PipeWireStreamData {
     gboolean frame_ready;
     gboolean stream_ready;
     GMutex frame_mutex;
-    GThread *pipewire_thread;
+    pthread_t pipewire_thread;
     
     XDGFrameRequest *parent_request;
 };
@@ -85,7 +87,7 @@ static void on_stream_process(void *userdata)
     struct spa_buffer *buf;
     struct spa_data *d;
  
-    g_print ("Processing PipeWire stream frame...\n");
+    //g_print ("Processing PipeWire stream frame...\n");
 
     if ((b = pw_stream_dequeue_buffer(pw_data->stream)) == NULL) {
         g_printerr("Out of buffers: %m\n");
@@ -144,8 +146,11 @@ static void on_stream_process(void *userdata)
     }
 
     pw_data->frame_ready = TRUE;
+    pw_data->parent_request->success = TRUE;
+    pw_data->parent_request->stream_started = TRUE;
+    
     g_mutex_unlock(&pw_data->frame_mutex);
-    g_print("PipeWire frame processed: %dx%d\n", pw_data->frame_width, pw_data->frame_height);
+    //g_print("PipeWire frame processed: %dx%d\n", pw_data->frame_width, pw_data->frame_height);
 
     pw_stream_queue_buffer(pw_data->stream, b);
 }
@@ -178,6 +183,9 @@ static gpointer pipewire_loop_thread_func(gpointer data) {
     g_print("PipeWire event loop thread finished.\n");
     return NULL;
 }
+
+
+
 
 static void
 process_pipewire_stream(XDGFrameRequest *frame_request)
@@ -212,9 +220,6 @@ process_pipewire_stream(XDGFrameRequest *frame_request)
         frame_request->completed = TRUE;
         return;
     }
-
-    // Initialize PipeWire
-    pw_init(NULL, NULL);
 
     // Create PipeWire stream data
     PipeWireStreamData *pw_data = g_new0(PipeWireStreamData, 1);
@@ -288,27 +293,33 @@ process_pipewire_stream(XDGFrameRequest *frame_request)
 
     g_print("PipeWire stream connected to node %u\n", node_id);
 
+
+    pw_main_loop_run(pw_data->loop); // Start the PipeWire main loop
+
     // Start PipeWire loop in a separate thread
-    pw_data->pipewire_thread = g_thread_new("pipewire-loop", pipewire_loop_thread_func, pw_data);
+    // if (pthread_create(&pw_data->pipewire_thread, NULL, pipewire_loop_thread_func, pw_data) != 0) {
+    //     g_printerr("Failed to create PipeWire thread\n");
+    //     goto cleanup;
+    // }
 
     // Wait for the stream to be ready
-    g_print("Waiting for the PipeWire stream to start...\n");
-    gboolean stream_is_ready = FALSE;
-    for (int i = 0; i < 100; i++) { // Wait up to 10 seconds
-        if (pw_data->stream_ready) {
-            stream_is_ready = TRUE;
-            break;
-        }
-        g_usleep(100000); // 100ms
-    }
+    // g_print("Waiting for the PipeWire stream to start...\n");
+    // gboolean stream_is_ready = FALSE;
+    // for (int i = 0; i < 100; i++) { // Wait up to 10 seconds
+    //     if (pw_data->stream_ready) {
+    //         stream_is_ready = TRUE;
+    //         break;
+    //     }
+    //     g_usleep(100000); // 100ms
+    // }
 
-    if (stream_is_ready) {
-        g_print("PipeWire stream is active.\n");
-        frame_request->success = TRUE;
-    } else {
-        g_printerr("PipeWire stream failed to start in time.\n");
-        frame_request->success = FALSE;
-    }
+    // if (stream_is_ready) {
+    //     g_print("PipeWire stream is active.\n");
+    //     frame_request->success = TRUE;
+    // } else {
+    //     g_printerr("PipeWire stream failed to start in time.\n");
+    //     frame_request->success = FALSE;
+    // }
 
 cleanup:
     // Note: We keep the PipeWire connection alive for the session
@@ -870,11 +881,27 @@ static gboolean screencast_timeout_callback(gpointer user_data) {
     return G_SOURCE_REMOVE;
 }
 
+static gpointer main_loop_thread_func(gpointer data) {
+    XDGFrameRequest *frame_request = (XDGFrameRequest *)data;
+    g_print("Starting main loop thread for ScreenCast session...\n");
+    
+    // Run the main loop until the session is completed
+    g_main_loop_run(frame_request->loop_for_sync_call);
+    
+    g_print("Main loop thread finished.\n");
+    return NULL;
+}
+
 XDGFrameRequest* init_screencast_session() {
     if (g_screencast_session && g_screencast_initialized) {
         // Return existing session
         return g_screencast_session;
     }
+
+    // Initialize PipeWire
+    pw_init(NULL, NULL);
+
+
 
     GDBusProxy *proxy;
     GError *error = NULL;
@@ -942,17 +969,28 @@ XDGFrameRequest* init_screencast_session() {
     g_object_unref(proxy);
 
     // Timeout for the entire operation
-    guint timeout_source_id = g_timeout_add(10000, // 10 seconds timeout
-                                           screencast_timeout_callback, frame_request);
+    //guint timeout_source_id = g_timeout_add(10000, // 10 seconds timeout
+    //                                       screencast_timeout_callback, frame_request);
 
-    g_main_loop_run(frame_request->loop_for_sync_call);
-
-    if (timeout_source_id > 0) {
-        g_source_remove(timeout_source_id);
+    // run the main loop on a separate thread
+    if (pthread_create(&main_loop_thread, NULL, main_loop_thread_func, frame_request) != 0) {
+        g_printerr("Failed to create main loop thread\n");
     }
 
-    g_main_loop_unref(frame_request->loop_for_sync_call);
-    frame_request->loop_for_sync_call = NULL;
+    // g_main_loop_run(frame_request->loop_for_sync_call);
+
+    //if (timeout_source_id > 0) {
+    //    g_source_remove(timeout_source_id);
+    //}
+
+    while ( !frame_request->success || !frame_request->stream_started ||  !frame_request->pw_data || !frame_request->pw_data->frame_ready ) {
+        sleep(1);
+    }
+
+    g_print("ScreenCast session initialization completed.\n");
+
+    //g_main_loop_unref(frame_request->loop_for_sync_call);
+    //frame_request->loop_for_sync_call = NULL;
 
     if (frame_request->success && frame_request->stream_started) {
         g_screencast_session = frame_request;
@@ -1053,8 +1091,7 @@ void cleanup_screencast_session() {
                 pw_main_loop_quit(pw_data->loop);
             }
             if (pw_data->pipewire_thread) {
-                g_thread_join(pw_data->pipewire_thread);
-                pw_data->pipewire_thread = NULL;
+                pthread_join(pw_data->pipewire_thread, NULL);
             }
 
             if (pw_data->stream) {
