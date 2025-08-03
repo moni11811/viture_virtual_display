@@ -108,10 +108,7 @@ static void on_stream_process(void *userdata)
     // Get frame dimensions from buffer metadata
     struct spa_meta_header *h = spa_buffer_find_meta_data(buf, SPA_META_Header, sizeof(*h));
     if (h) {
-        // For now, we'll get dimensions from the buffer size
-        // In a real implementation, we'd parse the video format properly
-        pw_data->frame_width = 1920; // Default, should be parsed from format
-        pw_data->frame_height = 1080; // Default, should be parsed from format
+        //TODO do something with that
     }
 
     // For now, assume common screen resolution if metadata is not available
@@ -226,6 +223,12 @@ process_pipewire_stream(XDGFrameRequest *frame_request)
     pw_data->parent_request = frame_request;
     frame_request->pw_data = pw_data;
     g_mutex_init(&pw_data->frame_mutex);
+
+    if ( frame_request->width > 0 && frame_request->height > 0) {
+        pw_data->frame_width = frame_request->width;
+        pw_data->frame_height = frame_request->height;
+        g_print ("Using provided dimensions: %dx%d\n", pw_data->frame_width, pw_data->frame_height);
+    }
 
     // Create main loop and context
     pw_data->loop = pw_main_loop_new(NULL);
@@ -362,6 +365,7 @@ on_start_response_signal(GDBusProxy *proxy,
             g_variant_unref(value);
         }
 
+        //Example parameters: (uint32 0, {'streams': <[(uint32 68, {'id': <'0'>, 'source_type': <uint32 1>, 'position': <(0, 0)>, 'size': <(2560, 1600)>})]>})
         streams_variant = g_variant_lookup_value(results_dict, "streams", G_VARIANT_TYPE("a(ua{sv})"));
         if (streams_variant) {
             GVariantIter stream_iter;
@@ -371,7 +375,19 @@ on_start_response_signal(GDBusProxy *proxy,
             g_print("Streams: %s\n", g_variant_print(streams_variant, TRUE));
 
             g_variant_iter_init(&stream_iter, streams_variant);
-            if (g_variant_iter_next(&stream_iter, "(ua{sv})", &node_id, &stream_properties)) {
+            if (g_variant_iter_next(&stream_iter, "(u@a{sv})", &node_id, &stream_properties)) {
+                //Get the size from stream_properties
+                GVariant *size_variant = g_variant_lookup_value(stream_properties, "size", G_VARIANT_TYPE("(ii)"));
+                if (size_variant) {
+                    int width, height;
+                    g_variant_get(size_variant, "(ii)", &width, &height);
+                    frame_request->width = width;
+                    frame_request->height = height;
+                    g_print("Stream size: %dx%d\n", width, height);
+                } else {
+                    g_printerr("No 'size' key found in stream properties\n");
+                }
+
                 frame_request->stream_node_id = g_strdup_printf("%u", node_id);
                 g_print("ScreenCast stream started with node ID: %s\n", frame_request->stream_node_id);
                 
@@ -1029,8 +1045,15 @@ XDGFrameRequest* get_xdg_root_window_frame_sync() {
         g_mutex_lock(&pw_data->frame_mutex);
         if (pw_data->frame_ready && pw_data->frame_data) {
             frame_request->success = TRUE;
-            frame_request->width = pw_data->frame_width;
-            frame_request->height = pw_data->frame_height;
+            if ( frame_request->width > 0 && frame_request->height > 0 ) {
+                pw_data->frame_width = frame_request->width;
+                pw_data->frame_height = frame_request->height;
+            } else {
+                // Use the current frame size if not set
+                frame_request->width = pw_data->frame_width;
+                frame_request->height = pw_data->frame_height;
+            }
+
             frame_request->stride = pw_data->frame_width * 3;
             
             size_t data_size = (size_t)frame_request->height * frame_request->stride;
