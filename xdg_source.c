@@ -86,7 +86,13 @@ static void on_stream_process(void *userdata)
     struct pw_buffer *b;
     struct spa_buffer *buf;
     struct spa_data *d;
- 
+    struct spa_meta_cursor *mcs;
+    struct spa_meta_bitmap *mb_cursor = NULL;
+    int cursor_x = 0;
+    int cursor_y = 0;
+    int cursor_w = 0;
+    int cursor_h = 0;
+
     //g_print ("Processing PipeWire stream frame...\n");
 
     if ((b = pw_stream_dequeue_buffer(pw_data->stream)) == NULL) {
@@ -110,6 +116,7 @@ static void on_stream_process(void *userdata)
     if (h) {
         //TODO do something with that
     }
+
 
     // For now, assume common screen resolution if metadata is not available
     if (pw_data->frame_width <= 0 || pw_data->frame_height <= 0) {
@@ -139,6 +146,40 @@ static void on_stream_process(void *userdata)
             dst[dst_offset + 1] = src[src_offset + 1]; // G
             dst[dst_offset + 2] = src[src_offset + 0]; // B
             // Skip alpha channel
+        }
+    }
+
+    // No tested yet because we don't get the meta data ( Ubuntu 22.04 bug ? )
+    if ((mcs = spa_buffer_find_meta_data(buf, SPA_META_Cursor, sizeof(*mcs))) ) {
+        if ( spa_meta_cursor_is_valid(mcs) )
+        {
+            int cstride;
+            int cursor_w;
+            int cursor_h;
+            int cursor_x = mcs->position.x;
+            int cursor_y = mcs->position.y;
+
+            mb_cursor = SPA_PTROFF(mcs, mcs->bitmap_offset, struct spa_meta_bitmap);
+            cursor_w = mb_cursor->size.width;
+            cursor_h = mb_cursor->size.height;
+
+            /* copy the cursor bitmap into the texture */
+            src = SPA_PTROFF(mb_cursor, mb_cursor->offset, uint8_t);
+            int ostride = mb_cursor->stride;
+
+            int cursor_offset_in_frame = (cursor_w * 3 * cursor_y + cursor_x * 3);
+            dst = pw_data->frame_data + cursor_offset_in_frame;
+            int dst_skip = (pw_data->frame_width - cursor_w) * 3;
+
+            if (frame_size > cursor_offset_in_frame + cursor_h * ostride)
+            {
+                for (int i = 0; i < mb_cursor->size.height; i++)
+                {
+                    memcpy(dst, src, ostride);
+                    dst += dst_skip;
+                    src += ostride;
+                }
+            }
         }
     }
 
@@ -264,7 +305,7 @@ process_pipewire_stream(XDGFrameRequest *frame_request)
     // Set up stream parameters
     uint8_t buffer[1024];
     struct spa_pod_builder b = SPA_POD_BUILDER_INIT(buffer, sizeof(buffer));
-    const struct spa_pod *params[1];
+    const struct spa_pod *params[2];
     
     params[0] = spa_pod_builder_add_object(&b,
         SPA_TYPE_OBJECT_Format, SPA_PARAM_EnumFormat,
@@ -283,13 +324,25 @@ process_pipewire_stream(XDGFrameRequest *frame_request)
             &SPA_FRACTION(0, 1),
             &SPA_FRACTION(1000, 1)));
 
+    #define CURSOR_META_SIZE(w,h)   (sizeof(struct spa_meta_cursor) + \
+                                 sizeof(struct spa_meta_bitmap) + w * h * 4)
+    /* cursor information */
+    params[1] = spa_pod_builder_add_object(&b,
+                SPA_TYPE_OBJECT_ParamMeta, SPA_PARAM_Meta,
+                SPA_PARAM_META_type, SPA_POD_Id(SPA_META_Cursor),
+                SPA_PARAM_META_size, SPA_POD_CHOICE_RANGE_Int(
+                                CURSOR_META_SIZE(64,64),
+                                CURSOR_META_SIZE(1,1),
+                                CURSOR_META_SIZE(256,256)));
+
+
     // Connect stream to the node
     if (pw_stream_connect(pw_data->stream,
                          PW_DIRECTION_INPUT,
                          node_id,
                          PW_STREAM_FLAG_AUTOCONNECT |
                          PW_STREAM_FLAG_MAP_BUFFERS,
-                         params, 1) < 0) {
+                         params, 2) < 0) {
         g_printerr("Failed to connect PipeWire stream to node %u\n", node_id);
         goto cleanup;
     }
