@@ -88,10 +88,6 @@ static void on_stream_process(void *userdata)
     struct spa_data *d;
     struct spa_meta_cursor *mcs;
     struct spa_meta_bitmap *mb_cursor = NULL;
-    int cursor_x = 0;
-    int cursor_y = 0;
-    int cursor_w = 0;
-    int cursor_h = 0;
 
     //g_print ("Processing PipeWire stream frame...\n");
 
@@ -153,7 +149,6 @@ static void on_stream_process(void *userdata)
     if ((mcs = spa_buffer_find_meta_data(buf, SPA_META_Cursor, sizeof(*mcs))) ) {
         if ( spa_meta_cursor_is_valid(mcs) )
         {
-            int cstride;
             int cursor_w;
             int cursor_h;
             int cursor_x = mcs->position.x;
@@ -173,7 +168,7 @@ static void on_stream_process(void *userdata)
 
             if (frame_size > cursor_offset_in_frame + cursor_h * ostride)
             {
-                for (int i = 0; i < mb_cursor->size.height; i++)
+                for (__uint8_t i = 0; i < mb_cursor->size.height; i++)
                 {
                     memcpy(dst, src, ostride);
                     dst += dst_skip;
@@ -213,16 +208,6 @@ static const struct pw_stream_events stream_events = {
     .process = on_stream_process,
     .state_changed = on_stream_state_changed,
 };
-
-static gpointer pipewire_loop_thread_func(gpointer data) {
-    PipeWireStreamData *pw_data = data;
-    g_print("Starting PipeWire event loop thread.\n");
-    pw_main_loop_run(pw_data->loop);
-    g_print("PipeWire event loop thread finished.\n");
-    return NULL;
-}
-
-
 
 
 static void
@@ -936,20 +921,6 @@ fail:
     }
 }
 
-// Timeout callback function for screencast session initialization
-static gboolean screencast_timeout_callback(gpointer user_data) {
-    XDGFrameRequest *freq = (XDGFrameRequest *)user_data;
-    if (!freq->completed) {
-        freq->completed = TRUE;
-        freq->success = FALSE;
-        g_printerr("ScreenCast session creation timed out\n");
-        if (freq->loop_for_sync_call && g_main_loop_is_running(freq->loop_for_sync_call)) {
-            g_main_loop_quit(freq->loop_for_sync_call);
-        }
-    }
-    return G_SOURCE_REMOVE;
-}
-
 static gpointer main_loop_thread_func(gpointer data) {
     XDGFrameRequest *frame_request = (XDGFrameRequest *)data;
     g_print("Starting main loop thread for ScreenCast session...\n");
@@ -1037,20 +1008,10 @@ XDGFrameRequest* init_screencast_session() {
 
     g_object_unref(proxy);
 
-    // Timeout for the entire operation
-    //guint timeout_source_id = g_timeout_add(10000, // 10 seconds timeout
-    //                                       screencast_timeout_callback, frame_request);
-
     // run the main loop on a separate thread
     if (pthread_create(&main_loop_thread, NULL, main_loop_thread_func, frame_request) != 0) {
         g_printerr("Failed to create main loop thread\n");
     }
-
-    // g_main_loop_run(frame_request->loop_for_sync_call);
-
-    //if (timeout_source_id > 0) {
-    //    g_source_remove(timeout_source_id);
-    //}
 
     while ( !frame_request->success || !frame_request->stream_started ||  !frame_request->pw_data || !frame_request->pw_data->frame_ready ) {
         sleep(1);
