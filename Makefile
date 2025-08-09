@@ -15,6 +15,20 @@ SRCS = v4l2_gl.c viture_connection.c utility.c xdg_source.c
 # Object files (automatically generated from SRCS)
 OBJS = $(SRCS:.c=.o)
 
+# --- Architecture specific flags ---
+ARCH := $(shell uname -m)
+
+ifeq ($(ARCH),x86_64)
+    ARCH_CFLAGS = -DARCH_X86_64
+    SIMD_LIB = 3rdparty/lib/libSimd_x86.a
+else ifeq ($(ARCH),aarch64)
+    ARCH_CFLAGS = -DARCH_ARM64
+    SIMD_LIB =
+else
+    $(warning "Unsupported architecture: $(ARCH)")
+    SIMD_LIB =
+endif
+
 # Compiler flags:
 # -Wall:      Enable all standard warnings
 # -Wextra:    Enable extra warnings
@@ -24,7 +38,7 @@ OBJS = $(SRCS:.c=.o)
 # -std=c11 causes a segfault in the viture code
 GLIB_CFLAGS = $(shell pkg-config --cflags glib-2.0 gio-2.0 gdk-pixbuf-2.0 gio-unix-2.0)
 PIPEWIRE_CFLAGS = $(shell pkg-config --cflags libpipewire-0.3)
-CFLAGS = -Wall -Wextra -g -O2 $(GLIB_CFLAGS) $(PIPEWIRE_CFLAGS)
+CFLAGS = -Wall -Wextra -g -O2 $(GLIB_CFLAGS) $(PIPEWIRE_CFLAGS) $(ARCH_CFLAGS)
 
 # Core graphics libraries
 GRAPHICS_LIBS = -lglut -lGL -lGLU -lusb-1.0
@@ -37,8 +51,6 @@ PTHREAD_LIB = -lpthread
 # For test_viture, we only need viture_connection.o, which itself doesn't use VITURE_LIB.
 VITURE_LIB = 3rdparty/lib/libviture_one_sdk_static.a
 
-SIMD_LIB_X86 = 3rdparty/lib/libSimd_x86.a
-
 GLIB_LIBS = $(shell pkg-config --libs glib-2.0 gio-2.0 gdk-pixbuf-2.0 gio-unix-2.0) -lm
 PIPEWIRE_LIBS = $(shell pkg-config --libs libpipewire-0.3)
 LIBS = $(GRAPHICS_LIBS) $(HIDAPI_LIB) $(PTHREAD_LIB) $(GLIB_LIBS) $(PIPEWIRE_LIBS)
@@ -50,7 +62,7 @@ RM = rm -f
 
 # The default goal is 'all', which builds the target executable.
 # The .PHONY directive tells make that 'all' is not a file.
-.PHONY: all test viture_sdk test_conversions test_xdg
+.PHONY: all test viture_sdk
 all: $(TARGET)
 
 viture_sdk: $(TARGET_VITURE_SDK)
@@ -59,7 +71,7 @@ viture_sdk: $(TARGET_VITURE_SDK)
 # The executable depends on all the object files.
 $(TARGET): $(OBJS)
 	@echo "==> Linking $(TARGET)..."
-	$(CC) -o $(TARGET) $(OBJS) $(SIMD_LIB_X86) $(LIBS) -lstdc++
+	$(CC) -o $(TARGET) $(OBJS) $(SIMD_LIB) $(LIBS) -lstdc++
 	@echo "==> Build complete: ./"$(TARGET)
 
 $(TARGET_VITURE_SDK): v4l2_gl_viture_sdk.o utility.o
