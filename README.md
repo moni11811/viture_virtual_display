@@ -190,6 +190,11 @@ This command would:
 
 [![Video demo](https://img.youtube.com/vi/yIymNF4RbDQ/0.jpg)](https://youtu.be/yIymNF4RbDQ)
 
+## Wayland support
+
+[![Wayland Video demo](https://img.youtube.com/vi/nqxBLsbLfbQ/0.jpg)](https://youtu.be/nqxBLsbLfbQ)
+
+
 
 ## TODO
 
