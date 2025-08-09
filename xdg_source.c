@@ -14,7 +14,10 @@
 #include <fcntl.h>
 #include <pthread.h>
 
+
+#ifdef ARCH_X86_64
 #include "3rdparty/include/SimdLib.h"
+#endif
 
 // PipeWire includes
 #include <pipewire/pipewire.h>
@@ -138,23 +141,28 @@ static void on_stream_process(void *userdata)
     uint8_t *src = (uint8_t *)d->data;
     uint8_t *dst = pw_data->frame_data;
 
+
+#ifdef ARCH_X86_64    
     SimdBgraToRgb(src, pw_data->frame_width, pw_data->frame_height, pw_data->frame_stride, dst, pw_data->frame_width * 3);
+#endif
 
-    // int step = 4;
-    // int line_start = frame_count % step;
+#ifdef ARCH_ARM64
+    int step = 4;
+    int line_start = frame_count % step;
 
-    // for (int y = line_start; y < pw_data->frame_height; y+=step) {
-    //     for (int x = 0; x < pw_data->frame_width; x++) {
-    //         int src_offset = (y * pw_data->frame_stride) + (x * 4);
-    //         int dst_offset = (y * pw_data->frame_width * 3) + (x * 3);
+    for (int y = line_start; y < pw_data->frame_height; y+=step) {
+        for (int x = 0; x < pw_data->frame_width; x++) {
+            int src_offset = (y * pw_data->frame_stride) + (x * 4);
+            int dst_offset = (y * pw_data->frame_width * 3) + (x * 3);
             
-    //         // Convert BGRA to RGB
-    //         dst[dst_offset + 0] = src[src_offset + 2]; // R
-    //         dst[dst_offset + 1] = src[src_offset + 1]; // G
-    //         dst[dst_offset + 2] = src[src_offset + 0]; // B
-    //         // Skip alpha channel
-    //     }
-    // }
+            // Convert BGRA to RGB
+            dst[dst_offset + 0] = src[src_offset + 2]; // R
+            dst[dst_offset + 1] = src[src_offset + 1]; // G
+            dst[dst_offset + 2] = src[src_offset + 0]; // B
+            // Skip alpha channel
+        }
+    }
+#endif
 
     /*
     // No tested yet because we don't get the meta data ( Ubuntu 22.04 bug ? )
@@ -190,8 +198,6 @@ static void on_stream_process(void *userdata)
         }
     }
     */
-
-
 
     pw_data->frame_ready = TRUE;
     pw_data->parent_request->success = TRUE;

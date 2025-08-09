@@ -8,20 +8,12 @@ CC = gcc
 # Target executable name
 TARGET = v4l2_gl
 TARGET_VITURE_SDK = v4l2_gl_viture_sdk
-TARGET_TEST = test_viture
-TARGET_TEST_CONVERSIONS = test_conversions
-TARGET_TEST_XDG = test_xdg
 
 # Source files (add more .c files here if your project grows)
 SRCS = v4l2_gl.c viture_connection.c utility.c xdg_source.c
-SRCS_TEST = test_viture.c viture_connection.c utility.c
-SRC_TEST_CONVERSIONS = test_conversions.c utility.c
-SRCS_TEST_XDG = xdg_source.c
 
 # Object files (automatically generated from SRCS)
 OBJS = $(SRCS:.c=.o)
-OBJS_TEST = $(SRCS_TEST:.c=.o)
-OBJS_TEST_XDG = $(SRCS_TEST_XDG:.c=.o)
 
 # Compiler flags:
 # -Wall:      Enable all standard warnings
@@ -50,12 +42,9 @@ SIMD_LIB_X86 = 3rdparty/lib/libSimd_x86.a
 GLIB_LIBS = $(shell pkg-config --libs glib-2.0 gio-2.0 gdk-pixbuf-2.0 gio-unix-2.0) -lm
 PIPEWIRE_LIBS = $(shell pkg-config --libs libpipewire-0.3)
 LIBS = $(GRAPHICS_LIBS) $(HIDAPI_LIB) $(PTHREAD_LIB) $(GLIB_LIBS) $(PIPEWIRE_LIBS)
-LIBS_TEST = $(HIDAPI_LIB) $(PTHREAD_LIB) $(GLIB_LIBS)
-LIBS_TEST_CONVERSIONS =
 
 # Standard command for removing files
 RM = rm -f
-
 
 # --- Rules ---
 
@@ -64,13 +53,7 @@ RM = rm -f
 .PHONY: all test viture_sdk test_conversions test_xdg
 all: $(TARGET)
 
-test: $(TARGET_TEST)
-
 viture_sdk: $(TARGET_VITURE_SDK)
-
-test_conversions: $(TARGET_TEST_CONVERSIONS)
-
-test_xdg: $(TARGET_TEST_XDG)
 
 # Rule to link the object files into the final executable.
 # The executable depends on all the object files.
@@ -83,31 +66,6 @@ $(TARGET_VITURE_SDK): v4l2_gl_viture_sdk.o utility.o
 	@echo "==> Linking $(TARGET_VITURE_SDK)..."
 	$(CC) -o $(TARGET_VITURE_SDK) v4l2_gl_viture_sdk.o utility.o $(VITURE_LIB) $(LIBS)
 	@echo "==> Build complete: ./"$(TARGET_VITURE_SDK)
-
-
-# Rule to link the test_viture executable
-$(TARGET_TEST): $(filter test_viture.o viture_connection.o utility.o, $(OBJS_TEST))
-	@echo "==> Linking $(TARGET_TEST)..."
-	$(CC) -o $(TARGET_TEST) $(filter test_viture.o viture_connection.o utility.o , $(OBJS_TEST)) $(LIBS_TEST)
-	@echo "==> Build complete: ./"$(TARGET_TEST)
-
-# Rule to link the test_viture executable
-$(TARGET_TEST_CONVERSIONS): test_conversions.c utility.c
-	@echo "==> Linking $(TARGET_TEST_CONVERSIONS)..."
-	$(CC) -g -msse4.1 -o $(TARGET_TEST_CONVERSIONS) test_conversions.c utility.c $(CFLAGS) $(LIBS_TEST_CONVERSIONS)
-	@echo "==> Build complete: ./"$(TARGET_TEST_CONVERSIONS)
-
-# Rule to link the test_xdg executable
-$(TARGET_TEST_XDG): xdg_source_test.o
-	@echo "==> Linking $(TARGET_TEST_XDG)..."
-	$(CC) -o $(TARGET_TEST_XDG) xdg_source_test.o $(LIBS)
-	@echo "==> Build complete: ./"$(TARGET_TEST_XDG)
-
-xdg_source_test.o: xdg_source.c
-	@echo "==> Compiling $< for testing..."
-	$(CC) $(CFLAGS) -DTEST_XDG_SOURCE -I. -c -o $@ $<
-
-
 
 # Pattern rule to compile .c files into .o files.
 # For any .o file, make will find the corresponding .c file
@@ -126,5 +84,5 @@ v4l2_gl_viture_sdk.o: v4l2_gl.c
 .PHONY: clean
 clean:
 	@echo "==> Cleaning up..."
-	$(RM) $(TARGET) $(TARGET_TEST) $(TARGET_VITURE_SDK) $(TARGET_TEST_CONVERSIONS) $(TARGET_TEST_XDG) $(OBJS) $(OBJS_TEST) $(OBJS_TEST_XDG) xdg_source_test.o
+	$(RM) $(TARGET) $(TARGET_VITURE_SDK) $(OBJS)
 	@echo "==> Done."
