@@ -2,7 +2,7 @@
 
 **Attention** this is **still in early development** and not fully functional yet. It will work but performance needs to be improved a lot. 
 
-v4l2_gl captures video from a HDMI-in on an OrangePI 5 Plus using the hdmirx V4L2 device, converts frames to RGB, and displays them in real-time on a textured quad in an OpenGL window. It supports Viture headset IMU integration, test patterns, and plane geometry.
+v4l2_gl captures an input video from a HDMI-in on an OrangePI 5 Plus using the hdmirx V4L2 device or a HDMI capture card or a local screenshare on Wayland, and displays it as a virtual screen in an OpenGL window. It supports the IMU from Viture Pro XR glasses for a 3DOF controlled screen.
 
 ![Diagram of virtual display](https://github.com/mgschwan/viture_virtual_display/blob/main/assets/virtual_display.png?raw=true)
 
@@ -46,6 +46,11 @@ To compile and run this application, ensure the following libraries are installe
     sudo apt install libhidapi-dev
     ```
 
+-   **libglib2.0-dev** and **libpipewire-0.3-dev** (optional): Required for the `--xdg` portal screen capture feature on Wayland.
+    ```
+    sudo apt install libglib2.0-dev libpipewire-0.3-dev
+    ```
+
 
 ## Compilation
 
@@ -65,17 +70,47 @@ make viture_sdk
 This will generate the executable **v4l2_gl_viture_sdk**
 
 
+## Running without root
+
+To run the application without root permissions, you need to set up a `udev` rule to grant the necessary permissions to the Viture device.
+
+1.  **Ensure your user is in the `plugdev` group.**
+    You can check your groups by running the `groups` command. If you are not in the `plugdev` group, you can add yourself with:
+    ```bash
+    sudo usermod -aG plugdev $USER
+    ```
+    You will need to log out and log back in for this change to take effect.
+
+2.  **Create a `udev` rule file.**
+    Create a new file named `S99-viture.rules` in the `/etc/udev/rules.d/` directory:
+    ```bash
+    sudo nano /etc/udev/rules.d/S99-viture.rules
+    ```
+
+3.  **Add the `udev` rule.**
+    Add the following line to the newly created file:
+    ```
+    SUBSYSTEMS=="usb", ENV{DEVTYPE}=="usb_device", ATTRS{idVendor}=="35ca", ATTRS{idProduct}=="101d", MODE="0666", GROUP="plugdev"
+    ```
+
+4.  **Reload the `udev` rules.**
+    For the changes to take effect, reload the `udev` rules with the following command:
+    ```bash
+    sudo udevadm control --reload-rules && sudo udevadm trigger
+    ```
+
+After completing these steps, you should be able to run the application without `sudo`.
 
 
 ## Running the viewer
 
 Execute the compiled application from your terminal:
 ```
-sudo ./v4l2_gl [options]
+./v4l2_gl [options]
 ```
 or
 ```
-sudo ./v4l2_gl_viture_sdk [options]
+./v4l2_gl_viture_sdk [options]
 ```
 
 ### Recenter view / rotation reset
@@ -88,7 +123,7 @@ Quickly shake your head left/right 3 times to reset the rotation to the center p
 The application supports the following command-line options:
 
 -   **`--device <path>`**:
-    Specifies the V4L2 device path (e.g., /dev/video0).
+    Specifies the V4L2 device path (e.g., /dev/video0). Not used if `--xdg` is enabled.
     Default: `/dev/video0`.
     Example: `./v4l2_gl --device /dev/video1`
 
@@ -101,6 +136,11 @@ The application supports the following command-line options:
     Enables integration with Viture headset IMU for controlling the rotation of the displayed plane. The Viture SDK and device must be correctly set up.
     Default: `false` (disabled).
     Example: `./v4l2_gl --viture`
+
+-   **`--xdg`**:
+    Use XDG Portal for screen capture on Wayland-based systems instead of a V4L2 device.
+    Default: `false` (disabled).
+    Example: `./v4l2_gl --xdg`
 
 -   **`--test-pattern`**:
     Displays a generated test pattern on the plane instead of the live camera feed. Useful for testing rendering and transformations.
@@ -119,9 +159,11 @@ The application supports the following command-line options:
 
 ### Combined Example
 
-You can combine these options:
+You can combine these options.
+
+Using a V4L2 device:
 ```bash
-./v4l2_gl --device /dev/video1 --viture --fullscreen --plane-distance 0.8 --plane-scale 1.2 --test-pattern
+./v4l2_gl --device /dev/video1 --viture --fullscreen --plane-distance 0.8 --plane-scale 1.2
 ```
 This command would:
 - Use V4L2 device `/dev/video1`.
@@ -129,7 +171,15 @@ This command would:
 - Run in fullscreen.
 - Set the plane orbit distance to 0.8 units.
 - Scale the plane to 120% of its original size.
-- Display the test pattern.
+
+Using XDG Portal for screen capture:
+```bash
+./v4l2_gl --xdg --viture --fullscreen
+```
+This command would:
+- Use the XDG portal for screen capture (e.g., on Wayland).
+- Enable Viture IMU.
+- Run in fullscreen.
 
 
 ## Demo
@@ -144,6 +194,7 @@ This command would:
 ## TODO
 
  - [x] Add support for USB HDMI capture cards to support SBCs that don't have HDMI-in like Raspberry PIs
+ - [x] Add XDG portal support for screen capture on Wayland
  - [ ] Fix errors in reverse engineered viture SDK
  - [ ] Improve performance of the hdmi texture conversion
  - [ ] Support MJPEG format to increase framerate of USB capture cards
