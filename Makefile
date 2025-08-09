@@ -45,7 +45,9 @@ PTHREAD_LIB = -lpthread
 # For test_viture, we only need viture_connection.o, which itself doesn't use VITURE_LIB.
 VITURE_LIB = 3rdparty/lib/libviture_one_sdk_static.a
 
-GLIB_LIBS = $(shell pkg-config --libs glib-2.0 gio-2.0 gdk-pixbuf-2.0 gio-unix-2.0)
+SIMD_LIB_X86 = 3rdparty/lib/libSimd_x86.a
+
+GLIB_LIBS = $(shell pkg-config --libs glib-2.0 gio-2.0 gdk-pixbuf-2.0 gio-unix-2.0) -lm
 PIPEWIRE_LIBS = $(shell pkg-config --libs libpipewire-0.3)
 LIBS = $(GRAPHICS_LIBS) $(HIDAPI_LIB) $(PTHREAD_LIB) $(GLIB_LIBS) $(PIPEWIRE_LIBS)
 LIBS_TEST = $(HIDAPI_LIB) $(PTHREAD_LIB) $(GLIB_LIBS)
@@ -74,7 +76,7 @@ test_xdg: $(TARGET_TEST_XDG)
 # The executable depends on all the object files.
 $(TARGET): $(OBJS)
 	@echo "==> Linking $(TARGET)..."
-	$(CC) -o $(TARGET) $(OBJS) $(LIBS)
+	$(CC) -o $(TARGET) $(OBJS) $(SIMD_LIB_X86) $(LIBS) -lstdc++
 	@echo "==> Build complete: ./"$(TARGET)
 
 $(TARGET_VITURE_SDK): v4l2_gl_viture_sdk.o utility.o

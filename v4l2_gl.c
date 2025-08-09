@@ -574,7 +574,7 @@ void capture_and_update() {
 
 }
 
-#define TARGET_FPS 60 // This can still be used for display refresh rate
+#define TARGET_FPS 30 // This can still be used for display refresh rate
 
 // --- Capture Thread ---
 void *capture_thread_func(void *arg) {
@@ -632,68 +632,75 @@ void idle()
     // For XDG, we might capture here or in display() before drawing.
     // Let's try capturing XDG frames here to decouple from display's GL context needs.
 
+    clock_t current_time = clock();
+    
     if (display_test_pattern) {
         fill_frame_with_pattern(rgb_frames[back_buffer_idx], actual_frame_width, actual_frame_height);
         pthread_mutex_lock(&frame_mutex);
         new_frame_captured = true;
         pthread_mutex_unlock(&frame_mutex);
     } else if (current_capture_mode == MODE_XDG) {
-        XDGFrameRequest *xdg_frame = get_xdg_root_window_frame_sync();
-        if (xdg_frame && xdg_frame->success && xdg_frame->data) {
-            if (xdg_frame->width != xdg_prev_frame_width || xdg_frame->height != xdg_prev_frame_height)
-            {
-                printf("V4L2_GL: XDG frame dimensions changed to %dx%d (from %dx%d)\n", 
-                       xdg_frame->width, xdg_frame->height, xdg_prev_frame_width, xdg_prev_frame_height);
-                actual_frame_width = xdg_frame->width;
-                actual_frame_height = xdg_frame->height;
-                xdg_prev_frame_width = actual_frame_width;
-                xdg_prev_frame_height = actual_frame_height;
-                texture_needs_respecification = true;
+        //if ( (current_time - last_redisplay_time) * 1000 / CLOCKS_PER_SEC >= (1000 / TARGET_FPS) ) {
+            XDGFrameRequest *xdg_frame = get_xdg_root_window_frame_sync();
+            if (xdg_frame && xdg_frame->success && xdg_frame->data) {
+                if (xdg_frame->width != xdg_prev_frame_width || xdg_frame->height != xdg_prev_frame_height)
+                {
+                    printf("V4L2_GL: XDG frame dimensions changed to %dx%d (from %dx%d)\n", 
+                        xdg_frame->width, xdg_frame->height, xdg_prev_frame_width, xdg_prev_frame_height);
+                    actual_frame_width = xdg_frame->width;
+                    actual_frame_height = xdg_frame->height;
+                    xdg_prev_frame_width = actual_frame_width;
+                    xdg_prev_frame_height = actual_frame_height;
+                    texture_needs_respecification = true;
 
-                // Reallocate rgb_frames if necessary
-                size_t new_size = (size_t)actual_frame_width * actual_frame_height * 3;
-                if (new_size > current_rgb_buffer_size || !rgb_frames[0] || !rgb_frames[1]) {
-                    printf("V4L2_GL: Reallocating RGB buffers to %zu bytes for %dx%d\n", new_size, actual_frame_width, actual_frame_height);
-                    free(rgb_frames[0]);
-                    free(rgb_frames[1]);
-                    rgb_frames[0] = malloc(new_size);
-                    rgb_frames[1] = malloc(new_size);
-                    if (!rgb_frames[0] || !rgb_frames[1]) {
-                        fprintf(stderr, "FATAL: Failed to reallocate RGB frames for XDG mode!\n");
-                        // Consider how to handle this - maybe exit or stop trying XDG.
-                        // For now, we might crash if memcpy proceeds.
-                        // Let's prevent memcpy if allocation failed.
-                        if (xdg_frame) free_xdg_frame_request(xdg_frame);
-                        // Skip frame processing this cycle
-                        goto skip_xdg_frame_processing; 
+                    // Reallocate rgb_frames if necessary
+                    size_t new_size = (size_t)actual_frame_width * actual_frame_height * 3;
+                    if (new_size > current_rgb_buffer_size || !rgb_frames[0] || !rgb_frames[1]) {
+                        printf("V4L2_GL: Reallocating RGB buffers to %zu bytes for %dx%d\n", new_size, actual_frame_width, actual_frame_height);
+                        free(rgb_frames[0]);
+                        free(rgb_frames[1]);
+                        rgb_frames[0] = malloc(new_size);
+                        rgb_frames[1] = malloc(new_size);
+                        if (!rgb_frames[0] || !rgb_frames[1]) {
+                            fprintf(stderr, "FATAL: Failed to reallocate RGB frames for XDG mode!\n");
+                            // Consider how to handle this - maybe exit or stop trying XDG.
+                            // For now, we might crash if memcpy proceeds.
+                            // Let's prevent memcpy if allocation failed.
+                            if (xdg_frame) free_xdg_frame_request(xdg_frame);
+                            // Skip frame processing this cycle
+                            goto skip_xdg_frame_processing; 
+                        }
+                        memset(rgb_frames[0], 0, new_size); // Clear new buffers
+                        memset(rgb_frames[1], 0, new_size);
+                        current_rgb_buffer_size = new_size;
                     }
-                    memset(rgb_frames[0], 0, new_size); // Clear new buffers
-                    memset(rgb_frames[1], 0, new_size);
-                    current_rgb_buffer_size = new_size;
+                }
+
+                if (rgb_frames[back_buffer_idx]) { // Check if buffer is allocated
+                    memcpy(rgb_frames[back_buffer_idx], xdg_frame->data, (size_t)actual_frame_width * actual_frame_height * 3);
+                    pthread_mutex_lock(&frame_mutex);
+                    new_frame_captured = true;
+                    pthread_mutex_unlock(&frame_mutex);
+                } else {
+                    fprintf(stderr, "V4L2_GL: rgb_frames not allocated, cannot copy XDG frame.\n");
                 }
             }
 
-            if (rgb_frames[back_buffer_idx]) { // Check if buffer is allocated
-                 memcpy(rgb_frames[back_buffer_idx], xdg_frame->data, (size_t)actual_frame_width * actual_frame_height * 3);
-                 pthread_mutex_lock(&frame_mutex);
-                 new_frame_captured = true;
-                 pthread_mutex_unlock(&frame_mutex);
-            } else {
-                 fprintf(stderr, "V4L2_GL: rgb_frames not allocated, cannot copy XDG frame.\n");
+            if (xdg_frame) {
+                free_xdg_frame_request(xdg_frame);
             }
-        } 
+        //}  /* end of FPS conditional */ 
 
-        if (xdg_frame) {
-            free_xdg_frame_request(xdg_frame);
-        }
     }
 
 skip_xdg_frame_processing:; // Label for goto
-    clock_t current_time = clock();
-    if ( (current_time - last_redisplay_time) * 1000 / CLOCKS_PER_SEC >= (1000 / TARGET_FPS) ) {
+    //if ( (current_time - last_redisplay_time) * 1000 / CLOCKS_PER_SEC >= (1000 / TARGET_FPS) ) {
         last_redisplay_time = current_time;
-        glutPostRedisplay();
-    }
+
+    glutPostRedisplay();
+    nanosleep(&(struct timespec){0, 1000000000L / TARGET_FPS}, NULL); // Sleep for FPS interval, this means the exact FPS will not be reached due to processing time
+
+    //}
 }
 
 void init_gl() {

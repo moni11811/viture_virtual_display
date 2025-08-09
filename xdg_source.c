@@ -14,6 +14,8 @@
 #include <fcntl.h>
 #include <pthread.h>
 
+#include "3rdparty/include/SimdLib.h"
+
 // PipeWire includes
 #include <pipewire/pipewire.h>
 #include <spa/param/video/format-utils.h>
@@ -82,6 +84,8 @@ static gboolean g_screencast_initialized = FALSE;
 // PipeWire stream event handlers
 static void on_stream_process(void *userdata)
 {
+    static unsigned int frame_count = 0;
+
     PipeWireStreamData *pw_data = userdata;
     struct pw_buffer *b;
     struct spa_buffer *buf;
@@ -90,6 +94,8 @@ static void on_stream_process(void *userdata)
     struct spa_meta_bitmap *mb_cursor = NULL;
 
     //g_print ("Processing PipeWire stream frame...\n");
+
+    frame_count++;
 
     if ((b = pw_stream_dequeue_buffer(pw_data->stream)) == NULL) {
         g_printerr("Out of buffers: %m\n");
@@ -108,10 +114,10 @@ static void on_stream_process(void *userdata)
     g_mutex_lock(&pw_data->frame_mutex);
 
     // Get frame dimensions from buffer metadata
-    struct spa_meta_header *h = spa_buffer_find_meta_data(buf, SPA_META_Header, sizeof(*h));
-    if (h) {
+    //struct spa_meta_header *h = spa_buffer_find_meta_data(buf, SPA_META_Header, sizeof(*h));
+    //if (h) {
         //TODO do something with that
-    }
+    //}
 
 
     // For now, assume common screen resolution if metadata is not available
@@ -131,20 +137,26 @@ static void on_stream_process(void *userdata)
     // Convert from BGRA to RGB
     uint8_t *src = (uint8_t *)d->data;
     uint8_t *dst = pw_data->frame_data;
-    
-    for (int y = 0; y < pw_data->frame_height; y++) {
-        for (int x = 0; x < pw_data->frame_width; x++) {
-            int src_offset = (y * pw_data->frame_stride) + (x * 4);
-            int dst_offset = (y * pw_data->frame_width * 3) + (x * 3);
-            
-            // Convert BGRA to RGB
-            dst[dst_offset + 0] = src[src_offset + 2]; // R
-            dst[dst_offset + 1] = src[src_offset + 1]; // G
-            dst[dst_offset + 2] = src[src_offset + 0]; // B
-            // Skip alpha channel
-        }
-    }
 
+    SimdBgraToRgb(src, pw_data->frame_width, pw_data->frame_height, pw_data->frame_stride, dst, pw_data->frame_width * 3);
+
+    // int step = 4;
+    // int line_start = frame_count % step;
+
+    // for (int y = line_start; y < pw_data->frame_height; y+=step) {
+    //     for (int x = 0; x < pw_data->frame_width; x++) {
+    //         int src_offset = (y * pw_data->frame_stride) + (x * 4);
+    //         int dst_offset = (y * pw_data->frame_width * 3) + (x * 3);
+            
+    //         // Convert BGRA to RGB
+    //         dst[dst_offset + 0] = src[src_offset + 2]; // R
+    //         dst[dst_offset + 1] = src[src_offset + 1]; // G
+    //         dst[dst_offset + 2] = src[src_offset + 0]; // B
+    //         // Skip alpha channel
+    //     }
+    // }
+
+    /*
     // No tested yet because we don't get the meta data ( Ubuntu 22.04 bug ? )
     if ((mcs = spa_buffer_find_meta_data(buf, SPA_META_Cursor, sizeof(*mcs))) ) {
         if ( spa_meta_cursor_is_valid(mcs) )
@@ -158,7 +170,7 @@ static void on_stream_process(void *userdata)
             cursor_w = mb_cursor->size.width;
             cursor_h = mb_cursor->size.height;
 
-            /* copy the cursor bitmap into the texture */
+            // copy the cursor bitmap into the texture 
             src = SPA_PTROFF(mb_cursor, mb_cursor->offset, uint8_t);
             int ostride = mb_cursor->stride;
 
@@ -177,6 +189,9 @@ static void on_stream_process(void *userdata)
             }
         }
     }
+    */
+
+
 
     pw_data->frame_ready = TRUE;
     pw_data->parent_request->success = TRUE;
