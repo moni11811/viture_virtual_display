@@ -488,6 +488,7 @@ static bool startReadMcu(void) {
     if (pthread_create(&mcu_read_tid, NULL, mcu_thread, NULL) != 0) {
         fprintf(stderr, "Error creating MCU monitor thread.\n");
         mcu_thread_flag = false;
+        pthread_barrier_destroy(&barrier_mcu);
         return false;
     }
     pthread_barrier_wait(&barrier_mcu); // Wait for thread to start
@@ -516,6 +517,7 @@ static bool startReadImu(void) {
     if (pthread_create(&imu_read_tid, NULL, imu_thread, NULL) != 0) {
         fprintf(stderr, "Error creating IMU monitor thread.\n");
         imu_thread_flag = false;
+        pthread_barrier_destroy(&barrier_imu);
         return false;
     }
     pthread_barrier_wait(&barrier_imu);
