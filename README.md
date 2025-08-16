@@ -200,8 +200,8 @@ This command would:
 
  - [x] Add support for USB HDMI capture cards to support SBCs that don't have HDMI-in like Raspberry PIs
  - [x] Add XDG portal support for screen capture on Wayland
- - [ ] Fix errors in reverse engineered viture SDK
- - [ ] Improve performance of the hdmi texture conversion
- - [ ] Support MJPEG format to increase framerate of USB capture cards
+ - [x] Fix errors in reverse engineered viture SDK
+ - [x] Improve performance of the hdmi texture conversion
+ - [x] Support MJPEG format to increase framerate of USB capture cards
  - [x] Add quick gesture to recenter the rotation
  - [ ] Add curved screen option

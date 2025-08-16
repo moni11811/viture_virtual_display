@@ -53,7 +53,7 @@ VITURE_LIB = 3rdparty/lib/libviture_one_sdk_static.a
 
 GLIB_LIBS = $(shell pkg-config --libs glib-2.0 gio-2.0 gdk-pixbuf-2.0 gio-unix-2.0) -lm
 PIPEWIRE_LIBS = $(shell pkg-config --libs libpipewire-0.3)
-LIBS = $(GRAPHICS_LIBS) $(HIDAPI_LIB) $(PTHREAD_LIB) $(GLIB_LIBS) $(PIPEWIRE_LIBS)
+LIBS = $(GRAPHICS_LIBS) $(HIDAPI_LIB) $(PTHREAD_LIB) $(GLIB_LIBS) $(PIPEWIRE_LIBS) -ljpeg
 
 # Standard command for removing files
 RM = rm -f
@@ -74,9 +74,9 @@ $(TARGET): $(OBJS)
 	$(CC) -o $(TARGET) $(OBJS) $(SIMD_LIB) $(LIBS) -lstdc++
 	@echo "==> Build complete: ./"$(TARGET)
 
-$(TARGET_VITURE_SDK): v4l2_gl_viture_sdk.o utility.o
+$(TARGET_VITURE_SDK): v4l2_gl_viture_sdk.o utility.o xdg_source.o
 	@echo "==> Linking $(TARGET_VITURE_SDK)..."
-	$(CC) -o $(TARGET_VITURE_SDK) v4l2_gl_viture_sdk.o utility.o $(VITURE_LIB) $(LIBS)
+	$(CC) -o $(TARGET_VITURE_SDK) v4l2_gl_viture_sdk.o utility.o xdg_source.o $(VITURE_LIB) $(SIMD_LIB) $(LIBS) -lstdc++
 	@echo "==> Build complete: ./"$(TARGET_VITURE_SDK)
 
 # Pattern rule to compile .c files into .o files.

@@ -66,18 +66,19 @@ struct mplane_buffer {
 static int fd = -1;
 static struct mplane_buffer *buffers_mp = NULL; 
 static unsigned int n_buffers = 0;
-static unsigned int num_planes_per_buffer = 0; 
+static unsigned int num_planes_per_buffer = 0;
 
 
 // --- Global variables for OpenGL ---
 static GLuint texture_id;
-static unsigned char *rgb_frames[2] = {NULL, NULL}; 
-static int front_buffer_idx = 0;                   
-static int back_buffer_idx = 1;                    
-static volatile bool new_frame_captured = false;   
+static unsigned char *rgb_frames[2] = {NULL, NULL};
+static int front_buffer_idx = 0;
+static int back_buffer_idx = 1;
+static volatile bool new_frame_captured = false;
 static pthread_mutex_t frame_mutex;
 static pthread_t capture_thread_id = 0; // Initialize to 0
 static volatile bool stop_capture_thread_flag = false;
+static GLenum gl_upload_format = GL_RGB;
 
 // For XDG mode
 static int xdg_prev_frame_width = 0;  // Renamed for clarity
@@ -283,6 +284,7 @@ void init_v4l2() {
             if ( ( num_planes_per_buffer == 1 || num_planes_per_buffer == 2 ) && active_pixel_format == V4L2_PIX_FMT_NV24) {
                 actual_frame_width = fmt.fmt.pix_mp.width;
                 actual_frame_height = fmt.fmt.pix_mp.height;
+                gl_upload_format = GL_RGB;
                 printf("V4L2: Format set to %dx%d, pixelformat NV24, %u planes (MPLANE)\n",
                        actual_frame_width, actual_frame_height, num_planes_per_buffer);
                 format_set = true;
@@ -296,19 +298,42 @@ void init_v4l2() {
         }
     }
     
-    if (!format_set) { 
+    if (!format_set) {
+        printf("V4L2: Attempting single-plane MJPEG format.\n");
+        active_buffer_type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
+        fmt.type = active_buffer_type;
+        fmt.fmt.pix.width       = FRAME_WIDTH;
+        fmt.fmt.pix.height      = FRAME_HEIGHT;
+        fmt.fmt.pix.pixelformat = V4L2_PIX_FMT_MJPEG;
+        fmt.fmt.pix.field       = V4L2_FIELD_NONE;
+        if (ioctl(fd, VIDIOC_S_FMT, &fmt) == 0) {
+            active_pixel_format = fmt.fmt.pix.pixelformat;
+            num_planes_per_buffer = 1;
+            actual_frame_width = fmt.fmt.pix.width;
+            actual_frame_height = fmt.fmt.pix.height;
+            gl_upload_format = GL_RGB;
+            printf("V4L2: Format set to %dx%d, pixelformat MJPEG (SINGLE-PLANE)\n",
+                   actual_frame_width, actual_frame_height);
+            format_set = true;
+        } else {
+            perror("VIDIOC_S_FMT (SINGLE-PLANE MJPEG) failed");
+        }
+    }
+
+    if (!format_set) {
         printf("V4L2: Attempting single-plane YUYV format.\n");
-        active_buffer_type = V4L2_BUF_TYPE_VIDEO_CAPTURE; 
-        fmt.type = active_buffer_type; 
+        active_buffer_type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
+        fmt.type = active_buffer_type;
         fmt.fmt.pix.width       = FRAME_WIDTH;
         fmt.fmt.pix.height      = FRAME_HEIGHT;
         fmt.fmt.pix.pixelformat = V4L2_PIX_FMT_YUYV;
         fmt.fmt.pix.field       = V4L2_FIELD_NONE;
         if (ioctl(fd, VIDIOC_S_FMT, &fmt) == 0) {
             active_pixel_format = fmt.fmt.pix.pixelformat;
-            num_planes_per_buffer = 1; 
+            num_planes_per_buffer = 1;
             actual_frame_width = fmt.fmt.pix.width;
             actual_frame_height = fmt.fmt.pix.height;
+            gl_upload_format = GL_BGR;
             printf("V4L2: Format set to %dx%d, pixelformat YUYV (SINGLE-PLANE)\n",
                    actual_frame_width, actual_frame_height);
             format_set = true;
@@ -483,13 +508,13 @@ void display() {
         printf("V4L2_GL: Re-specifying texture to %dx%d\n", actual_frame_width, actual_frame_height);
         // Update texture storage with new dimensions
         glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, actual_frame_width, actual_frame_height, 0,
-                     GL_RGB, GL_UNSIGNED_BYTE, NULL); // Data can be NULL if immediately followed by glTexSubImage2D
+                     gl_upload_format, GL_UNSIGNED_BYTE, NULL); // Data can be NULL if immediately followed by glTexSubImage2D
         texture_needs_respecification = false;
         generate_texture = true; // Force update with new data even if new_frame_captured was false before this
     }
 
     if ( generate_texture ) {
-        glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, actual_frame_width, actual_frame_height, GL_RGB, GL_UNSIGNED_BYTE, rgb_frames[front_buffer_idx]);
+        glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, actual_frame_width, actual_frame_height, gl_upload_format, GL_UNSIGNED_BYTE, rgb_frames[front_buffer_idx]);
     }
 
     if ( (use_viture_imu && initial_offsets_set) || current_capture_mode == MODE_XDG || display_test_pattern) { // Draw quad if IMU is set, in XDG mode, or displaying test pattern
@@ -539,10 +564,10 @@ void capture_and_update() {
                 (const unsigned char *)buffers_mp[buf.index].planes[0].start,
                 (const unsigned char *)buffers_mp[buf.index].planes[1].start,
                 rgb_frames[back_buffer_idx], actual_frame_width, actual_frame_height);
-        } else if (active_pixel_format == V4L2_PIX_FMT_NV24 && num_planes_per_buffer == 1) { 
+        } else if (active_pixel_format == V4L2_PIX_FMT_NV24 && num_planes_per_buffer == 1) {
             convert_nv24_to_rgb(
                 (const unsigned char *)buffers_mp[buf.index].planes[0].start,
-                (const unsigned char *)buffers_mp[buf.index].planes[0].start + actual_frame_width * actual_frame_height, 
+                (const unsigned char *)buffers_mp[buf.index].planes[0].start + actual_frame_width * actual_frame_height,
                 rgb_frames[back_buffer_idx], actual_frame_width, actual_frame_height);
         } else {
              fprintf(stderr, "Error: Unsupported MPLANE pixel format %c%c%c%c or plane count %u\n",
@@ -553,8 +578,11 @@ void capture_and_update() {
         }
     } else { // Single-plane
         if (active_pixel_format == V4L2_PIX_FMT_YUYV) {
-            convert_yuyv_to_rgb((const unsigned char *)buffers_mp[buf.index].planes[0].start, 
+            convert_yuyv_to_bgr((const unsigned char *)buffers_mp[buf.index].planes[0].start,
                                  rgb_frames[back_buffer_idx], actual_frame_width, actual_frame_height, buf.bytesused);
+        } else if (active_pixel_format == V4L2_PIX_FMT_MJPEG) {
+            convert_mjpeg_to_rgb((const unsigned char *)buffers_mp[buf.index].planes[0].start,
+                                 buf.bytesused, rgb_frames[back_buffer_idx], actual_frame_width, actual_frame_height);
         } else {
              fprintf(stderr, "Error: Unsupported SINGLE-PLANE pixel format %c%c%c%c\n",
                     (active_pixel_format)&0xFF, (active_pixel_format>>8)&0xFF,
@@ -740,7 +768,7 @@ void init_gl() {
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
     
     glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, actual_frame_width, actual_frame_height, 0,
-                 GL_RGB, GL_UNSIGNED_BYTE, rgb_frames[front_buffer_idx]); 
+                 gl_upload_format, GL_UNSIGNED_BYTE, rgb_frames[front_buffer_idx]);
 
     glut_initialized = true; 
 }
