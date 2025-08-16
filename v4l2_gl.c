@@ -12,6 +12,11 @@
 #include <linux/videodev2.h>
 
 #include <stdbool.h>
+#include <math.h>
+
+#ifndef M_PI
+#define M_PI 3.14159265358979323846
+#endif
 
 #define KGFLAGS_IMPLEMENTATION
 #include "kgflags.h"
@@ -89,10 +94,11 @@ static size_t current_rgb_buffer_size = 0;
 
 static bool glut_initialized = false;
 
-static bool fullscreen_mode = false; 
-static bool display_test_pattern = false;                
-static float g_plane_orbit_distance = 1.0f;         
-static float g_plane_scale = 1.0f;                  
+static bool fullscreen_mode = false;
+static bool display_test_pattern = false;
+static float g_plane_orbit_distance = 1.0f;
+static float g_plane_scale = 1.0f;
+static bool use_curved_screen = false;
 
 // --- V4L2 Device Path ---
 static const char *v4l2_device_path_str = "/dev/video0"; // Default value
@@ -517,14 +523,31 @@ void display() {
         glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, actual_frame_width, actual_frame_height, gl_upload_format, GL_UNSIGNED_BYTE, rgb_frames[front_buffer_idx]);
     }
 
-    if ( (use_viture_imu && initial_offsets_set) || current_capture_mode == MODE_XDG || display_test_pattern) { // Draw quad if IMU is set, in XDG mode, or displaying test pattern
+    if ((use_viture_imu && initial_offsets_set) || current_capture_mode == MODE_XDG || display_test_pattern) {
         float aspect_ratio = (float)actual_frame_width / (float)actual_frame_height;
-        glBegin(GL_QUADS);
-            glTexCoord2f(0.0f, 1.0f); glVertex3f(-aspect_ratio, -1.0f, 0.0f);
-            glTexCoord2f(1.0f, 1.0f); glVertex3f( aspect_ratio, -1.0f, 0.0f);
-            glTexCoord2f(1.0f, 0.0f); glVertex3f( aspect_ratio,  1.0f, 0.0f);
-            glTexCoord2f(0.0f, 0.0f); glVertex3f(-aspect_ratio,  1.0f, 0.0f);
-        glEnd();    
+        if (use_curved_screen) {
+            const int segments = 32;
+            const float curve_angle = (float)M_PI / 4.0f; // 45 degrees of curvature
+            const float width = 2.0f * aspect_ratio;
+            const float radius = width / (2.0f * sinf(curve_angle / 2.0f));
+            glBegin(GL_TRIANGLE_STRIP);
+            for (int i = 0; i <= segments; ++i) {
+                float t = (float)i / (float)segments;
+                float angle = -curve_angle / 2.0f + t * curve_angle;
+                float x = radius * sinf(angle);
+                float z = radius * (cosf(angle) - 1.0f);
+                glTexCoord2f(t, 1.0f); glVertex3f(x, -1.0f, z);
+                glTexCoord2f(t, 0.0f); glVertex3f(x,  1.0f, z);
+            }
+            glEnd();
+        } else {
+            glBegin(GL_QUADS);
+                glTexCoord2f(0.0f, 1.0f); glVertex3f(-aspect_ratio, -1.0f, 0.0f);
+                glTexCoord2f(1.0f, 1.0f); glVertex3f( aspect_ratio, -1.0f, 0.0f);
+                glTexCoord2f(1.0f, 0.0f); glVertex3f( aspect_ratio,  1.0f, 0.0f);
+                glTexCoord2f(0.0f, 0.0f); glVertex3f(-aspect_ratio,  1.0f, 0.0f);
+            glEnd();
+        }
     }
     glutSwapBuffers();
 }
@@ -779,6 +802,7 @@ int main(int argc, char **argv) {
     kgflags_bool("fullscreen", false, "Enable fullscreen mode.", false, &fullscreen_mode);
     kgflags_bool("viture", false, "Enable Viture IMU.", false, &use_viture_imu);
     kgflags_bool("test-pattern", false, "Display test pattern instead of V4L2.", false, &display_test_pattern);
+    kgflags_bool("curved-screen", false, "Render the screen with a horizontal curvature.", false, &use_curved_screen);
     bool use_xdg_mode = false;
     kgflags_bool("xdg", false, "Use XDG portal for screen capture instead of V4L2.", false, &use_xdg_mode);
 
@@ -812,6 +836,7 @@ int main(int argc, char **argv) {
     printf("  Test Pattern: %s\n", display_test_pattern ? "enabled" : "disabled");
     printf("  V4L2 Device: %s\n", v4l2_device_path_str);
     printf("  XDG Mode: %s\n", use_xdg_mode ? "enabled" : "disabled");
+    printf("  Curved Screen: %s\n", use_curved_screen ? "enabled" : "disabled");
     printf("  Plane Orbit Distance: %f\n", g_plane_orbit_distance);
     printf("  Plane Scale: %f\n", g_plane_scale);
     printf("\n");
