@@ -147,6 +147,11 @@ The application supports the following command-line options:
     Default: `false` (disabled).
     Example: `./v4l2_gl --test-pattern`
 
+-   **`--curved-screen`**:
+    Renders the screen with a horizontal curvature instead of a flat quad.
+    Default: `false` (disabled).
+    Example: `./v4l2_gl --curved-screen`
+
 -   **`--plane-distance <distance>`**:
     Sets the distance at which the plane orbits the world origin. `<distance>` is a floating-point value.
     Default: `1.0`.
@@ -203,5 +208,5 @@ This command would:
  - [x] Fix errors in reverse engineered viture SDK
  - [x] Improve performance of the hdmi texture conversion
  - [x] Support MJPEG format to increase framerate of USB capture cards
- - [x] Add quick gesture to recenter the rotation
- - [ ] Add curved screen option
+- [x] Add quick gesture to recenter the rotation
+ - [x] Add curved screen option
